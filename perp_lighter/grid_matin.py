@@ -128,7 +128,7 @@ class GridTrading:
 
             for is_ask, price, amount in orders:
                 # 签名订单
-                tx_info, error = self.signer_client.sign_create_order(
+                tx_type, tx_info, error = self.signer_client.sign_create_order(
                     market_index=self.market_id,
                     client_order_index=client_order_index,
                     base_amount=int(amount * self.base_amount_multiplier),
@@ -146,7 +146,7 @@ class GridTrading:
                     return False
 
                 # 累积交易类型和信息到列表中
-                tx_types.append(self.signer_client.TX_TYPE_CREATE_ORDER)
+                tx_types.append(tx_type)
                 tx_infos.append(tx_info)
 
                 client_order_index += 1
@@ -217,7 +217,7 @@ class GridTrading:
 
             # 签名订单
             order_id = int(time.time() * 1000) % 1000000
-            tx_info, error = self.signer_client.sign_create_order(
+            tx_type, tx_info, error = self.signer_client.sign_create_order(
                 market_index=self.market_id,
                 client_order_index=order_id,
                 base_amount=int(amount * self.base_amount_multiplier),
@@ -236,7 +236,7 @@ class GridTrading:
 
             # 发送交易
             success = await self.ws_client.send_single_tx_async(
-                self.signer_client.TX_TYPE_CREATE_ORDER, tx_info
+                tx_type, tx_info
             )
 
             if success:
@@ -278,7 +278,7 @@ class GridTrading:
             tx_infos = []
                 
             for order_id in order_ids:       
-                tx_info, error = self.signer_client.sign_cancel_order(
+                tx_type, tx_info, error = self.signer_client.sign_cancel_order(
                     market_index=self.market_id,
                     order_index=order_id,
                     nonce=nonce_value,
@@ -289,7 +289,7 @@ class GridTrading:
                     return False
 
                 # 累积交易类型和信息到列表中
-                tx_types.append(self.signer_client.TX_TYPE_CANCEL_ORDER)
+                tx_types.append(tx_type)
                 tx_infos.append(tx_info)
 
                 nonce_value += 1
@@ -304,7 +304,6 @@ class GridTrading:
                 logger.error("批量发送网格订单失败")
                 return False
                 
-            return True
         except Exception as e:
             logger.error(f"取消网格订单时发生错误: {e}")
             return False
