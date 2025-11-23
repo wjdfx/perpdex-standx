@@ -1,0 +1,13 @@
+# perp_lighter 项目依赖 (第三方库)
+
+# 核心 API SDK
+git+https://github.com/elliottech/lighter-python.git
+
+# 数据分析
+pandas
+numpy
+
+# WebSocket 支持
+websockets
+# 环境变量支持
+python-dotenv
