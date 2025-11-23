@@ -1,6 +1,7 @@
 import json
 import logging
 import asyncio
+import time
 from websockets.sync.client import connect
 from websockets.asyncio.client import connect as connect_async
 
@@ -959,8 +960,9 @@ class UnifiedWebSocketClient:
                 )
 
                 # 创建认证令牌
+                expiry = int(time.time()) + 10 * SignerClient.MINUTE
                 auth, err = signer_client.create_auth_token_with_expiry(
-                    SignerClient.DEFAULT_10_MIN_AUTH_EXPIRY
+                    deadline=expiry
                 )
                 if err is not None:
                     logger.error(f"创建认证令牌失败: {auth}")

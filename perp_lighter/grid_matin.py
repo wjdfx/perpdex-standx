@@ -323,12 +323,14 @@ class GridTrading:
         order_api = lighter.OrderApi(api_client)
         
         try:
+            expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
             auth, err = self.signer_client.create_auth_token_with_expiry(
-                lighter.SignerClient.DEFAULT_10_MIN_AUTH_EXPIRY
+                deadline=expiry
             )
             if err is not None:
                 logger.error(f"创建认证令牌失败: {auth}")
                 return
+            
             orders = await order_api.account_active_orders(
                 account_index=self.account_index,
                 market_id=self.market_id,

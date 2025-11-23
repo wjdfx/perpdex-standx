@@ -700,8 +700,9 @@ async def run_grid_trading():
     )
 
     # 创建认证令牌
+    expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
     auth, err = signer_client.create_auth_token_with_expiry(
-        lighter.SignerClient.DEFAULT_10_MIN_AUTH_EXPIRY
+        deadline=expiry
     )
     if err is not None:
         logger.error(f"创建认证令牌失败: {auth}")
