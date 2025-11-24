@@ -55,6 +55,7 @@ class GridTradingState:
         self.start_time: float = time.time()  # 启动时间
         self.open_price: Optional[float] = None  # 启动时基准价格
         self.last_filled_order_is_ask: bool = False  # 上次成交订单方向
+        self.last_replenish_time: float = 0  # 上次补单时间
 
 
 # 全局状态实例
@@ -185,6 +186,7 @@ async def check_order_fills(orders: dict):
                         await check_current_orders()
                         # 补充网格订单
                         await replenish_grid()
+                        trading_state.last_replenish_time = time.time()
 
 
 def calculate_grid_prices(
@@ -765,6 +767,10 @@ async def run_grid_trading():
             async with replenish_grid_lock:
                 # 检查当前订单是否合理
                 await check_current_orders()
+                
+                if time.time() - trading_state.last_replenish_time < 5:
+                    # 刚刚进行过消息订阅补单，跳过常规检查补单
+                    continue
                 # 补充网格订单
                 await replenish_grid()
 
