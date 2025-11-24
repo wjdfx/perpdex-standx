@@ -780,7 +780,8 @@ async def run_grid_trading():
             position = account_info.positions[0]
             position_size = position.position
             if position_size is not None:
-                logger.info(f"📊 当前仓位: {position_size}")
+                direction = "多头" if position_size > 0 else "空头"
+                logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
 
             unrealized_pnl = float(position.unrealized_pnl)
 
