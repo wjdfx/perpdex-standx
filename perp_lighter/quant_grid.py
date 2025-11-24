@@ -183,7 +183,7 @@ async def check_order_fills(orders: dict):
                     # 补充网格（异步方式）
                     if replenish:
                         # 检查当前订单是否合理
-                        await check_current_orders()
+                        # await check_current_orders()
                         # 补充网格订单
                         await replenish_grid()
                         trading_state.last_replenish_time = time.time()
@@ -765,12 +765,11 @@ async def run_grid_trading():
             await asyncio.sleep(10)
             # 额外检查是否需要补单
             async with replenish_grid_lock:
-                # 检查当前订单是否合理
-                # await check_current_orders()
-                
                 if time.time() - trading_state.last_replenish_time < 5:
                     # 刚刚进行过消息订阅补单，跳过常规检查补单
                     continue
+                # 检查当前订单是否合理
+                await check_current_orders()
                 # 补充网格订单
                 await replenish_grid()
 
