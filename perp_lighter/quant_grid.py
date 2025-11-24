@@ -441,6 +441,10 @@ async def replenish_grid():
             # 计算新买单价格
             grid_single_price = trading_state.grid_single_price
             new_buy_price = round(low_buy_price - grid_single_price, 2)
+            # 如果新补买单价格已经高于当前价格，则不补单
+            if new_buy_price >= trading_state.current_price:
+                logger.info("新补买单价格高于当前价格，暂不补单")
+                return
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
                 is_ask=False,
@@ -487,6 +491,10 @@ async def replenish_grid():
             # 计算新卖单价格
             grid_single_price = trading_state.grid_single_price
             new_sell_price = round(high_sell_price + grid_single_price, 2)
+            # 如果新补卖单价格已经低于当前价格，则不补单
+            if new_sell_price <= trading_state.current_price:
+                logger.info("新补卖单价格低于当前价格，暂不补单")
+                return
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
                 is_ask=True,
@@ -544,6 +552,10 @@ async def replenish_grid():
                     new_buy_price = round(
                         high_buy_price + trading_state.grid_single_price, 2
                     )
+                    # 如果新补买单价格已经高于当前价格，则不补单
+                    if new_buy_price >= trading_state.current_price:
+                        logger.info("新补买单价格高于当前价格，暂不补单")
+                        return
                     success, order_id = (
                         await trading_state.grid_trading.place_single_order(
                             is_ask=False,
@@ -579,6 +591,10 @@ async def replenish_grid():
                     new_sell_price = round(
                         low_sell_price - trading_state.grid_single_price, 2
                     )
+                    # 如果新补卖单价格已经低于当前价格，则不补单
+                    if new_sell_price <= trading_state.current_price:
+                        logger.info("新补卖单价格低于当前价格，暂不补单")
+                        return
                     success, order_id = (
                         await trading_state.grid_trading.place_single_order(
                             is_ask=True,
