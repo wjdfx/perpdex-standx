@@ -3,7 +3,7 @@ import datetime
 import lighter
 import logging
 
-from config import (
+from common.config import (
     BASE_URL,
     L1_ADDRESS,
     API_KEY_PRIVATE_KEY,

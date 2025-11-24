@@ -2,7 +2,7 @@ import json
 import logging
 import asyncio
 import lighter
-from config import ACCOUNT_INDEX
+from common.config import ACCOUNT_INDEX
 
 logging.basicConfig(level=logging.INFO)
 

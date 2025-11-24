@@ -21,7 +21,7 @@ API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY', '')
 
 # 日志配置
 LOG_LEVEL = os.getenv('LOG_LEVEL', "INFO")
-LOG_FORMAT = os.getenv('LOG_FORMAT', "%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s")
+LOG_FORMAT = os.getenv('LOG_FORMAT', "")
 
 # 订单查询配置
 DEFAULT_ORDER_LIMIT = int(os.getenv('DEFAULT_ORDER_LIMIT', '50'))  # 默认查询订单数量限制

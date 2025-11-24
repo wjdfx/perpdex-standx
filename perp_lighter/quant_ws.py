@@ -3,7 +3,7 @@ import asyncio
 import lighter
 from ws_client import create_unified_client
 from grid_matin import GridTrading
-from config import (
+from common.config import (
     BASE_URL,
     API_KEY_PRIVATE_KEY,
     ACCOUNT_INDEX,

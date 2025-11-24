@@ -946,7 +946,7 @@ class UnifiedWebSocketClient:
                 self.ws = await connect_async(self.base_url)
                 
                 from lighter import SignerClient
-                from config import (
+                from common.config import (
                     BASE_URL,
                     API_KEY_PRIVATE_KEY,
                     ACCOUNT_INDEX,

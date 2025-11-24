@@ -3,8 +3,8 @@ import logging
 import time
 import lighter
 from typing import List, Tuple, Optional
-from ws_client import UnifiedWebSocketClient
-from config import BASE_URL
+from .ws_client import UnifiedWebSocketClient
+from common.config import BASE_URL
 
 
 logger = logging.getLogger(__name__)

@@ -16,7 +16,7 @@ from strategy import (
     check_volatility,
     TradingSignal,
 )
-from config import (
+from common.config import (
     BASE_URL,
     API_KEY_PRIVATE_KEY,
     ACCOUNT_INDEX,

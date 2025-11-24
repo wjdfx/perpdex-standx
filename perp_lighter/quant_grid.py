@@ -1,9 +1,15 @@
-import logging
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s",
+from common.config import (
+    BASE_URL,
+    API_KEY_PRIVATE_KEY,
+    ACCOUNT_INDEX,
+    API_KEY_INDEX,
 )
+
+import logging
+from common.logging_config import setup_logging
+
+# 配置日志
+setup_logging()
 logger = logging.getLogger(__name__)
 
 import json
@@ -12,14 +18,9 @@ import time
 from typing import Dict, List, Optional, Set, Tuple
 import lighter
 from lighter.signer_client import CODE_OK
-from ws_client import create_unified_client
-from grid_matin import GridTrading
-from config import (
-    BASE_URL,
-    API_KEY_PRIVATE_KEY,
-    ACCOUNT_INDEX,
-    API_KEY_INDEX,
-)
+from .ws_client import create_unified_client
+from .grid_matin import GridTrading
+
 
 # 网格交易参数配置
 GRID_CONFIG = {

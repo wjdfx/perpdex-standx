@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 import lighter
 import asyncio
 
-from config import (
+from common.config import (
     BASE_URL,
     API_KEY_PRIVATE_KEY,
     ACCOUNT_INDEX,
