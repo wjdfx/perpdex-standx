@@ -27,10 +27,9 @@ GRID_CONFIG = {
     "GRID_COUNT": 3,  # 每侧网格数量
     "GRID_AMOUNT": 0.01,  # 单网格挂单量
     "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
-    "GRID_SELL_SPREAD_ALERT": False,  # 卖单警告价差
-    "GRID_BUY_SPREAD_ALERT": False,  # 买单警告价差
     "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
     "MAX_POSITION": 0.3,  # 最大仓位限制
+    "DECREASE_POSITION": 0.2,  # 降低仓位触发点
     "ALER_POSITION": 0.1,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
 }
@@ -40,7 +39,6 @@ GRID_CONFIG = {
 class GridTradingState:
     def __init__(self):
         self.current_price: Optional[float] = None
-        self.grid_orders: Set[str] = set()  # 网格订单ID集合
         self.is_running: bool = False
         self.grid_trading: Optional[GridTrading] = None  # 网格交易实例
         self.buy_prices: List[float] = []  # 买单价格列表（升序）
@@ -56,6 +54,9 @@ class GridTradingState:
         self.open_price: Optional[float] = None  # 启动时基准价格
         self.last_filled_order_is_ask: bool = False  # 上次成交订单方向
         self.last_replenish_time: float = 0  # 上次补单时间
+        self.grid_pause: bool = False  # 网格交易暂停标志
+        self.grid_sell_spread_alert: bool = False  # 卖单警告价差状态
+        self.grid_buy_spread_alert: bool = False  # 买单警告价差状态
 
 
 # 全局状态实例
@@ -223,30 +224,6 @@ def calculate_grid_prices(
     return buy_prices, sell_prices
 
 
-def get_current_grid_status():
-    """
-    获取当前网格状态
-    """
-    global trading_state
-
-    logger.info(f"买单价格列表: {trading_state.buy_prices}")
-    logger.info(f"卖单价格列表: {trading_state.sell_prices}")
-
-    buy_orders_pirces = sorted(list(trading_state.buy_orders.values()))
-    sell_orders_prices = sorted(list(trading_state.sell_orders.values()))
-    logger.info(f"当前活跃买单订单价格: {buy_orders_pirces}")
-    logger.info(f"当前活跃卖单订单价格: {sell_orders_prices}")
-
-    return {
-        "current_price": trading_state.current_price,
-        "buy_prices": sorted(trading_state.buy_prices),
-        "sell_prices": sorted(trading_state.sell_prices),
-        "grid_orders_count": len(trading_state.grid_orders),
-        "active_buy_orders_prices": sorted(buy_orders_pirces),
-        "active_sell_orders_prices": sorted(sell_orders_prices),
-    }
-
-
 def check_position_limits(positions: dict):
     """
     检查仓位是否超出限制
@@ -262,20 +239,36 @@ def check_position_limits(positions: dict):
             )
             if sign > 0:
                 # 多头仓位
-                GRID_CONFIG["GRID_BUY_SPREAD_ALERT"] = True
+                trading_state.grid_buy_spread_alert = True
             else:
                 # 空头仓位
-                GRID_CONFIG["GRID_SELL_SPREAD_ALERT"] = True
+                trading_state.grid_sell_spread_alert = True
+            
+            logger.info("当前处于警告价差状态，补单间距加倍")
+            trading_state.grid_single_price = (
+                trading_state.original_buy_prices[1]
+                - trading_state.original_buy_prices[0]
+            ) * 2
         else:
-            GRID_CONFIG["GRID_BUY_SPREAD_ALERT"] = False
-            GRID_CONFIG["GRID_SELL_SPREAD_ALERT"] = False
+            trading_state.grid_buy_spread_alert = False
+            trading_state.grid_sell_spread_alert = False
+            trading_state.grid_single_price = (
+                trading_state.original_buy_prices[1]
+                - trading_state.original_buy_prices[0]
+            )
 
         max_pos = GRID_CONFIG["MAX_POSITION"]
         if position_size > max_pos:
             logger.warning(
                 f"⚠️ 仓位超出限制: 市场={market_id}, 当前={position_size}, 限制={max_pos}"
             )
-            # TODO 这里可以添加停止交易的逻辑
+            # 网格交易暂停
+            trading_state.grid_pause = True
+            
+async def decrease_position():
+    """
+    TODO 降低仓位的逻辑
+    """
 
 
 # def check_orders_count():
@@ -418,19 +411,6 @@ async def replenish_grid():
         if len(buy_orders_prices) > 0:
             high_buy_price = buy_orders_prices[-1]
             
-        
-        if GRID_CONFIG["GRID_BUY_SPREAD_ALERT"] or GRID_CONFIG["GRID_SELL_SPREAD_ALERT"]:
-            logger.info("当前处于警告价差状态，补单间距加倍")
-            trading_state.grid_single_price = (
-                trading_state.original_buy_prices[1]
-                - trading_state.original_buy_prices[0]
-            ) * 2
-        else:
-            trading_state.grid_single_price = (
-                trading_state.original_buy_prices[1]
-                - trading_state.original_buy_prices[0]
-            )
-
         # 买单侧被吃单到需要补单时
         while len(buy_orders_prices) < GRID_CONFIG["GRID_COUNT"]:
             # 买单侧补单
@@ -531,7 +511,7 @@ async def replenish_grid():
                     f"卖单侧被吃单补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
                 )
 
-        # 如果卖单最低价和买单最高价差距大于 2 * GRID_SPREAD，则补充中间价单
+        # 大间距补单，如果卖单最低价和买单最高价差距大于 2 * GRID_SPREAD，则补充中间价单
         buy_orders_prices = sorted(list(trading_state.buy_orders.values()))
         sell_orders_prices = sorted(list(trading_state.sell_orders.values()))
         low_sell_price = trading_state.current_price + trading_state.grid_single_price
@@ -541,13 +521,13 @@ async def replenish_grid():
         if len(buy_orders_prices) > 0:
             high_buy_price = buy_orders_prices[-1]
         if low_sell_price - high_buy_price > 2.5 * trading_state.grid_single_price:
-            if trading_state.current_price - high_buy_price > trading_state.grid_single_price * 1.5:
+            if trading_state.current_price - high_buy_price > trading_state.grid_single_price * 1.2:
                 # 补充买单
-                if GRID_CONFIG["GRID_BUY_SPREAD_ALERT"]:
+                if trading_state.grid_buy_spread_alert:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
                 else:
                     if not trading_state.last_filled_order_is_ask:
-                        # 当前成交订单为买单，不补充买单
+                        logger.info("当前成交订单为买单，不补充买单")
                         return
                     new_buy_price = round(
                         high_buy_price + trading_state.grid_single_price, 2
@@ -580,13 +560,13 @@ async def replenish_grid():
             high_buy_price = trading_state.current_price - trading_state.grid_single_price
             if len(buy_orders_prices) > 0:
                 high_buy_price = buy_orders_prices[-1]
-            if low_sell_price - trading_state.current_price > trading_state.grid_single_price * 1.5:
+            if low_sell_price - trading_state.current_price > trading_state.grid_single_price * 1.2:
                 # 补充卖单
-                if GRID_CONFIG["GRID_SELL_SPREAD_ALERT"]:
+                if trading_state.grid_sell_spread_alert:
                     logger.info("当前处于卖单警告价差状态，大间距暂不补单")
                 else:
                     if trading_state.last_filled_order_is_ask:
-                        # 当前成交订单为卖单，不补充卖单
+                        logger.info("当前成交订单为卖单，不补充卖单")
                         return
                     new_sell_price = round(
                         low_sell_price - trading_state.grid_single_price, 2
@@ -781,13 +761,12 @@ async def run_grid_trading():
             await asyncio.sleep(10)
             # 额外检查是否需要补单
             async with replenish_grid_lock:
-                if time.time() - trading_state.last_replenish_time < 5:
-                    # 刚刚进行过消息订阅补单，跳过常规检查补单
-                    continue
-                # 检查当前订单是否合理
-                await check_current_orders()
-                # 补充网格订单
-                await replenish_grid()
+                # 订阅消息补单时间大于一定时间后，才进行常规检查补单
+                if time.time() - trading_state.last_replenish_time > 5:
+                    # 检查当前订单是否合理
+                    await check_current_orders()
+                    # 补充网格订单
+                    await replenish_grid()
 
             # 检查仓位状态
             account_info_resp = await account_api.account(
