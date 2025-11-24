@@ -54,6 +54,7 @@ class GridTradingState:
         self.current_collateral: float = 0  # 当前保证金
         self.start_time: float = time.time()  # 启动时间
         self.open_price: Optional[float] = None  # 启动时基准价格
+        self.last_filled_order_is_ask: bool = False  # 上次成交订单方向
 
 
 # 全局状态实例
@@ -139,6 +140,7 @@ async def check_order_fills(orders: dict):
 
                     # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
                     replenish = False
+                    trading_state.last_filled_order_is_ask = is_ask
 
                     if is_ask:
                         if client_order_index in trading_state.sell_orders:
@@ -534,6 +536,9 @@ async def replenish_grid():
                 if GRID_CONFIG["GRID_BUY_SPREAD_ALERT"]:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
                 else:
+                    if not trading_state.last_filled_order_is_ask:
+                        # 当前成交订单为买单，不补充买单
+                        return
                     new_buy_price = round(
                         high_buy_price + trading_state.grid_single_price, 2
                     )
@@ -566,6 +571,9 @@ async def replenish_grid():
                 if GRID_CONFIG["GRID_SELL_SPREAD_ALERT"]:
                     logger.info("当前处于卖单警告价差状态，大间距暂不补单")
                 else:
+                    if trading_state.last_filled_order_is_ask:
+                        # 当前成交订单为卖单，不补充卖单
+                        return
                     new_sell_price = round(
                         low_sell_price - trading_state.grid_single_price, 2
                     )
