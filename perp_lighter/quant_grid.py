@@ -58,6 +58,7 @@ class GridTradingState:
         self.grid_sell_spread_alert: bool = False  # 卖单警告价差状态
         self.grid_buy_spread_alert: bool = False  # 买单警告价差状态
         self.grid_decrease_status: bool = False  # 降低仓位状态
+        self.current_position_size: float = 0  # 当前仓位大小
 
 
 # 全局状态实例
@@ -229,8 +230,11 @@ def check_position_limits(positions: dict):
     """
     检查仓位是否超出限制
     """
+    global trading_state
+    
     for market_id, position in positions.items():
         position_size = abs(float(position.get("position", 0)))
+        trading_state.current_position_size = position_size
         if position_size == 0:
             return
         sign = int(position.get("sign", "0"))
@@ -538,7 +542,7 @@ async def replenish_grid():
         if len(buy_orders_prices) > 0:
             high_buy_price = buy_orders_prices[-1]
         if low_sell_price - high_buy_price > 2.5 * trading_state.grid_single_price:
-            if trading_state.current_price - high_buy_price > trading_state.grid_single_price * 1.2:
+            if trading_state.current_price - high_buy_price > trading_state.grid_single_price * 1.5:
                 # 补充买单
                 if trading_state.grid_buy_spread_alert:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
@@ -578,7 +582,7 @@ async def replenish_grid():
             high_buy_price = trading_state.current_price - trading_state.grid_single_price
             if len(buy_orders_prices) > 0:
                 high_buy_price = buy_orders_prices[-1]
-            if low_sell_price - trading_state.current_price > trading_state.grid_single_price * 1.2:
+            if low_sell_price - trading_state.current_price > trading_state.grid_single_price * 1.5:
                 # 补充卖单
                 if trading_state.grid_sell_spread_alert:
                     logger.info("当前处于卖单警告价差状态，大间距暂不补单")
@@ -626,9 +630,9 @@ async def check_current_orders():
 
     global trading_state
 
-    cancel_orders = []
     # 如果有一侧订单过多，取消最远的订单
     if len(trading_state.buy_orders) > GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+        cancel_orders = []
         # 买单侧删除从最低价开始删除
         buy_orders = dict(
             sorted(trading_state.buy_orders.items(), key=lambda item: item[1])
@@ -650,8 +654,8 @@ async def check_current_orders():
                     del trading_state.buy_orders[order_id]
             logger.info(f"批量取消买单订单成功: 订单ID列表={cancel_orders}")
     
-    cancel_orders = []
     if len(trading_state.sell_orders) > GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+        cancel_orders = []
         # 卖单侧删除从最高价开始删除
         sell_orders = dict(
             sorted(trading_state.sell_orders.items(), key=lambda item: item[1], reverse=True)
@@ -798,6 +802,7 @@ async def run_grid_trading():
 
             position = account_info.positions[0]
             position_size = position.position
+            trading_state.current_position_size = abs(float(position_size))
             if position_size is not None:
                 direction = "多头" if position.sign > 0 else "空头"
                 logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
