@@ -534,29 +534,29 @@ async def replenish_grid():
                     if not trading_state.last_filled_order_is_ask and not trading_state.grid_sell_spread_alert:
                         # 如果上次成交订单是买单，且当前没有卖单警告价差状态，则不补充买单，卖单警告状态时，允许补充买单以平衡仓位
                         logger.info("当前成交订单为买单，不补充买单")
-                        return
-                    new_buy_price = round(
-                        high_buy_price + trading_state.grid_single_price, 2
-                    )
-                    # 如果新补买单价格已经高于当前价格，则不补单
-                    if new_buy_price >= trading_state.current_price:
-                        logger.info("新补买单价格高于当前价格，暂不补单")
-                        return
-                    success, order_id = (
-                        await trading_state.grid_trading.place_single_order(
-                            is_ask=False,
-                            price=new_buy_price,
-                            amount=GRID_CONFIG["GRID_AMOUNT"],
+                    else:
+                        new_buy_price = round(
+                            high_buy_price + trading_state.grid_single_price, 2
                         )
-                    )
-                    if success:
-                        # 更新buy_orders_prices而不是trading_state.buy_prices
-                        buy_orders_prices.append(new_buy_price)
-                        buy_orders_prices.sort()
-                        trading_state.buy_orders[order_id] = new_buy_price
-                        logger.info(
-                            f"大间距补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
+                        # 如果新补买单价格已经高于当前价格，则不补单
+                        if new_buy_price >= trading_state.current_price:
+                            logger.info("新补买单价格高于当前价格，暂不补单")
+                            return
+                        success, order_id = (
+                            await trading_state.grid_trading.place_single_order(
+                                is_ask=False,
+                                price=new_buy_price,
+                                amount=GRID_CONFIG["GRID_AMOUNT"],
+                            )
                         )
+                        if success:
+                            # 更新buy_orders_prices而不是trading_state.buy_prices
+                            buy_orders_prices.append(new_buy_price)
+                            buy_orders_prices.sort()
+                            trading_state.buy_orders[order_id] = new_buy_price
+                            logger.info(
+                                f"大间距补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
+                            )
 
             buy_orders_prices = sorted(list(trading_state.buy_orders.values()))
             sell_orders_prices = sorted(list(trading_state.sell_orders.values()))
@@ -574,29 +574,29 @@ async def replenish_grid():
                     if trading_state.last_filled_order_is_ask and not trading_state.grid_buy_spread_alert:
                         # 如果上次成交订单是卖单，且当前没有买单警告价差状态，则不补充卖单，买单警告状态时，允许补充卖单以平衡仓位
                         logger.info("当前成交订单为卖单，不补充卖单")
-                        return
-                    new_sell_price = round(
-                        low_sell_price - trading_state.grid_single_price, 2
-                    )
-                    # 如果新补卖单价格已经低于当前价格，则不补单
-                    if new_sell_price <= trading_state.current_price:
-                        logger.info("新补卖单价格低于当前价格，暂不补单")
-                        return
-                    success, order_id = (
-                        await trading_state.grid_trading.place_single_order(
-                            is_ask=True,
-                            price=new_sell_price,
-                            amount=GRID_CONFIG["GRID_AMOUNT"],
+                    else:
+                        new_sell_price = round(
+                            low_sell_price - trading_state.grid_single_price, 2
                         )
-                    )
-                    if success:
-                        # 更新sell_orders_prices而不是trading_state.sell_prices
-                        sell_orders_prices.append(new_sell_price)
-                        sell_orders_prices.sort()
-                        trading_state.sell_orders[order_id] = new_sell_price
-                        logger.info(
-                            f"大间距补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
+                        # 如果新补卖单价格已经低于当前价格，则不补单
+                        if new_sell_price <= trading_state.current_price:
+                            logger.info("新补卖单价格低于当前价格，暂不补单")
+                            return
+                        success, order_id = (
+                            await trading_state.grid_trading.place_single_order(
+                                is_ask=True,
+                                price=new_sell_price,
+                                amount=GRID_CONFIG["GRID_AMOUNT"],
+                            )
                         )
+                        if success:
+                            # 更新sell_orders_prices而不是trading_state.sell_prices
+                            sell_orders_prices.append(new_sell_price)
+                            sell_orders_prices.sort()
+                            trading_state.sell_orders[order_id] = new_sell_price
+                            logger.info(
+                                f"大间距补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
+                            )
 
             # # 重新获取最新的价格列表
             # high_buy_price = buy_orders_prices[-1]
