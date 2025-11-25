@@ -232,8 +232,9 @@ def check_position_limits(positions: dict):
         position_size = abs(float(position.get("position", 0)))
         sign = int(position.get("sign", "0"))
         alert_pos = GRID_CONFIG["ALER_POSITION"]
+        decrease_position = GRID_CONFIG["DECREASE_POSITION"]
         # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
-        if position_size >= alert_pos:
+        if position_size >= alert_pos and position_size < decrease_position:
             logger.warning(
                 f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
             )
@@ -249,6 +250,10 @@ def check_position_limits(positions: dict):
                 trading_state.original_buy_prices[1]
                 - trading_state.original_buy_prices[0]
             ) * 2
+        elif position_size >= decrease_position:
+            logger.warning(
+                f"⚠️ 警告：仓位超出降低点，开始降低仓位: 市场={market_id}, 当前={position_size}, 降低点={decrease_position}"
+            )
         else:
             trading_state.grid_buy_spread_alert = False
             trading_state.grid_sell_spread_alert = False
@@ -256,7 +261,7 @@ def check_position_limits(positions: dict):
                 trading_state.original_buy_prices[1]
                 - trading_state.original_buy_prices[0]
             )
-
+        
         max_pos = GRID_CONFIG["MAX_POSITION"]
         if position_size > max_pos:
             logger.warning(
@@ -526,7 +531,8 @@ async def replenish_grid():
                 if trading_state.grid_buy_spread_alert:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
                 else:
-                    if not trading_state.last_filled_order_is_ask:
+                    if not trading_state.last_filled_order_is_ask and not trading_state.grid_sell_spread_alert:
+                        # 如果上次成交订单是买单，且当前没有卖单警告价差状态，则不补充买单，卖单警告状态时，允许补充买单以平衡仓位
                         logger.info("当前成交订单为买单，不补充买单")
                         return
                     new_buy_price = round(
@@ -565,7 +571,8 @@ async def replenish_grid():
                 if trading_state.grid_sell_spread_alert:
                     logger.info("当前处于卖单警告价差状态，大间距暂不补单")
                 else:
-                    if trading_state.last_filled_order_is_ask:
+                    if trading_state.last_filled_order_is_ask and not trading_state.grid_buy_spread_alert:
+                        # 如果上次成交订单是卖单，且当前没有买单警告价差状态，则不补充卖单，买单警告状态时，允许补充卖单以平衡仓位
                         logger.info("当前成交订单为卖单，不补充卖单")
                         return
                     new_sell_price = round(
