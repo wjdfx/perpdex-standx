@@ -59,6 +59,7 @@ class GridTradingState:
         self.grid_buy_spread_alert: bool = False  # 买单警告价差状态
         self.grid_decrease_status: bool = False  # 降低仓位状态
         self.current_position_size: float = 0  # 当前仓位大小
+        self.current_position_sign: int = 0  # 当前仓位方向
 
 
 # 全局状态实例
@@ -676,6 +677,60 @@ async def check_current_orders():
                 if order_id in trading_state.sell_orders:
                     del trading_state.sell_orders[order_id]
             logger.info(f"批量取消卖单订单成功: 订单ID列表={cancel_orders}")
+    
+    # 当前仓位 + 同方向订单，需要小于最大仓位限制
+    if trading_state.current_position_size > GRID_CONFIG["MAX_POSITION"]/2:
+        if trading_state.current_position_sign > 0:
+            # 多头仓位
+            if len(trading_state.buy_orders) > GRID_CONFIG["GRID_COUNT"]:
+                logger.info("当前多头仓位较大，取消部分买单订单以降低仓位")
+                cancel_orders = []
+                # 取消最远的买单订单
+                buy_orders = dict(
+                    sorted(trading_state.buy_orders.items(), key=lambda item: item[1])
+                )
+                cancel_count = (
+                    len(trading_state.buy_orders) - GRID_CONFIG["GRID_COUNT"]
+                )
+                for order_id, price in buy_orders.items():
+                    if len(cancel_orders) < cancel_count:
+                        cancel_orders.append(order_id)
+                        logger.info(f"取消最远买单订单，价格={price}, 订单ID={order_id}")
+                    else:
+                        break
+
+                success = await trading_state.grid_trading.cancel_grid_orders(cancel_orders)
+                if success:
+                    for order_id in cancel_orders:
+                        if order_id in trading_state.buy_orders:
+                            del trading_state.buy_orders[order_id]
+                    logger.info(f"批量取消买单订单成功: 订单ID列表={cancel_orders}")
+        elif trading_state.current_position_sign < 0:
+            # 空头仓位
+            if len(trading_state.sell_orders) > GRID_CONFIG["GRID_COUNT"]:
+                logger.info("当前空头仓位较大，取消部分卖单订单以降低仓位")
+                cancel_orders = []
+                # 取消最远的卖单订单
+                sell_orders = dict(
+                    sorted(trading_state.sell_orders.items(), key=lambda item: item[1], reverse=True)
+                )
+                cancel_count = (
+                    len(trading_state.sell_orders) - GRID_CONFIG["GRID_COUNT"]
+                )
+                for order_id, price in sell_orders.items():
+                    if len(cancel_orders) < cancel_count:
+                        cancel_orders.append(order_id)
+                        logger.info(f"取消最远卖单订单，价格={price}, 订单ID={order_id}")
+                    else:
+                        break
+
+                success = await trading_state.grid_trading.cancel_grid_orders(cancel_orders)
+                if success:
+                    for order_id in cancel_orders:
+                        if order_id in trading_state.sell_orders:
+                            del trading_state.sell_orders[order_id]
+                    logger.info(f"批量取消卖单订单成功: 订单ID列表={cancel_orders}")
+                
             
     # 通过rest api核对当前订单列表
     orders = await trading_state.grid_trading.get_orders_by_rest()
@@ -803,6 +858,7 @@ async def run_grid_trading():
             position = account_info.positions[0]
             position_size = position.position
             trading_state.current_position_size = abs(float(position_size))
+            trading_state.current_position_sign = int(position.sign)
             if position_size is not None:
                 direction = "多头" if position.sign > 0 else "空头"
                 logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
