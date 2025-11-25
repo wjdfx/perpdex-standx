@@ -57,6 +57,7 @@ class GridTradingState:
         self.grid_pause: bool = False  # 网格交易暂停标志
         self.grid_sell_spread_alert: bool = False  # 卖单警告价差状态
         self.grid_buy_spread_alert: bool = False  # 买单警告价差状态
+        self.grid_decrease_status: bool = False  # 降低仓位状态
 
 
 # 全局状态实例
@@ -230,6 +231,8 @@ def check_position_limits(positions: dict):
     """
     for market_id, position in positions.items():
         position_size = abs(float(position.get("position", 0)))
+        if position_size == 0:
+            return
         sign = int(position.get("sign", "0"))
         alert_pos = GRID_CONFIG["ALER_POSITION"]
         decrease_position = GRID_CONFIG["DECREASE_POSITION"]
@@ -245,15 +248,17 @@ def check_position_limits(positions: dict):
                 # 空头仓位
                 trading_state.grid_sell_spread_alert = True
             
-            logger.info("当前处于警告价差状态，补单间距加倍")
+            # logger.info("当前处于警告价差状态，补单间距加倍")
             trading_state.grid_single_price = (
                 trading_state.original_buy_prices[1]
                 - trading_state.original_buy_prices[0]
             ) * 2
+            trading_state.grid_decrease_status = False
         elif position_size >= decrease_position:
             logger.warning(
                 f"⚠️ 警告：仓位超出降低点，开始降低仓位: 市场={market_id}, 当前={position_size}, 降低点={decrease_position}"
             )
+            trading_state.grid_decrease_status = True
         else:
             trading_state.grid_buy_spread_alert = False
             trading_state.grid_sell_spread_alert = False
@@ -261,6 +266,7 @@ def check_position_limits(positions: dict):
                 trading_state.original_buy_prices[1]
                 - trading_state.original_buy_prices[0]
             )
+            trading_state.grid_decrease_status = False
         
         max_pos = GRID_CONFIG["MAX_POSITION"]
         if position_size > max_pos:
@@ -419,6 +425,9 @@ async def replenish_grid():
         # 买单侧被吃单到需要补单时
         while len(buy_orders_prices) < GRID_CONFIG["GRID_COUNT"]:
             # 买单侧补单
+            if trading_state.grid_buy_spread_alert and trading_state.grid_decrease_status:
+                logger.info("当前处于买单警告价差和降低仓位状态，只做减仓单")
+                break
             logger.info("买单侧需要补单")
             # 价格下降，补低价单
             low_buy_price = buy_orders_prices[0]
@@ -429,7 +438,7 @@ async def replenish_grid():
             # 如果新补买单价格已经高于当前价格，则不补单
             if new_buy_price >= trading_state.current_price:
                 logger.info("新补买单价格高于当前价格，暂不补单")
-                return
+                break
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
                 is_ask=False,
@@ -448,7 +457,7 @@ async def replenish_grid():
             # 卖单侧需补充低价单
             if low_sell_price - high_buy_price <= 2.5 * trading_state.grid_single_price:
                 logger.info("买单侧和卖单侧价格差距过小，暂不补单")
-                return
+                break
             # 计算新卖单价格
             new_sell_price = round(low_sell_price - trading_state.grid_single_price, 2)
             # 执行订单补充
@@ -469,6 +478,9 @@ async def replenish_grid():
         # 卖单侧被吃单到需要补单时
         while len(sell_orders_prices) < GRID_CONFIG["GRID_COUNT"]:
             # 卖单侧补单
+            if trading_state.grid_sell_spread_alert and trading_state.grid_decrease_status:
+                logger.info("当前处于卖单警告价差和降低仓位状态，只做减仓单")
+                break
             logger.info("卖单侧需要补单")
             # 价格上升，补高价单
             high_sell_price = sell_orders_prices[-1]
@@ -795,13 +807,14 @@ async def run_grid_trading():
             # 检查当前账户保证金
             trading_state.current_collateral = float(account_info.collateral)
 
+            unrealized_collateral = (
+                trading_state.current_collateral + unrealized_pnl
+            )
             pnl = (
-                trading_state.current_collateral
-                - trading_state.start_collateral
-                + unrealized_pnl
+                unrealized_collateral - trading_state.start_collateral
             )
             logger.info(
-                f"💰 保证金情况: 初始: {trading_state.start_collateral}, 当前: {trading_state.current_collateral}, 盈亏: {round(pnl,6)}"
+                f"💰盈亏情况: 初始: {trading_state.start_collateral}, 当前: {unrealized_collateral}, 盈亏: {round(pnl,6)}"
             )
             logger.info(
                 f"⏱️ 运行时间: {round(time.time() - trading_state.start_time)} 秒, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}"
