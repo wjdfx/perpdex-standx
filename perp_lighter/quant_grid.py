@@ -679,7 +679,7 @@ async def check_current_orders():
             logger.info(f"批量取消卖单订单成功: 订单ID列表={cancel_orders}")
     
     # 当前仓位 + 同方向订单，需要小于最大仓位限制
-    if trading_state.current_position_size > GRID_CONFIG["MAX_POSITION"]/2:
+    if trading_state.current_position_size > GRID_CONFIG["ALER_POSITION"]/2:
         if trading_state.current_position_sign > 0:
             # 多头仓位
             if len(trading_state.buy_orders) > GRID_CONFIG["GRID_COUNT"]:
