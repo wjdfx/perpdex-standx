@@ -2,9 +2,11 @@ import json
 import logging
 import time
 import lighter
+import pandas as pd
 from typing import List, Tuple, Optional
 from .ws_client import UnifiedWebSocketClient
 from common.config import BASE_URL
+from lighter.signer_client import CODE_OK
 
 
 logger = logging.getLogger(__name__)
@@ -343,3 +345,44 @@ class GridTrading:
             return None
         finally:
             await api_client.close()
+            
+async def candle_stick(
+    candle_api: lighter.CandlestickApi,
+    market_id: int,
+) -> pd.DataFrame:
+    start_time = int(time.time()) - 3600 * 10  # 10小时前
+    end_time = int(time.time())
+    count_back = 500
+    resolution = "1m"
+
+    resp = await candle_api.candlesticks(
+        market_id=market_id,
+        start_timestamp=start_time,
+        end_timestamp=end_time,
+        count_back=count_back,
+        resolution=resolution,
+    )
+    if resp.code != CODE_OK:
+        print(f"获取K线数据失败: {resp.message}")
+        return None
+
+    # 将K线数据转换为DataFrame
+    candle_data = []
+    for candle in resp.candlesticks:
+        candle_data.append(
+            {
+                "time": candle.timestamp,
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume0,
+            }
+        )
+
+    df = pd.DataFrame(candle_data)
+
+    # 将时间戳转换为可读格式（毫秒值）
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+
+    return df

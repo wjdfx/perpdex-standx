@@ -20,6 +20,8 @@ import lighter
 from lighter.signer_client import CODE_OK
 from .ws_client import create_unified_client
 from .grid_matin import GridTrading
+from collections import deque
+from typing import Deque
 
 
 # 网格交易参数配置
@@ -28,9 +30,9 @@ GRID_CONFIG = {
     "GRID_AMOUNT": 0.01,  # 单网格挂单量
     "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
     "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
-    "MAX_POSITION": 0.3,  # 最大仓位限制
-    "DECREASE_POSITION": 0.2,  # 降低仓位触发点
-    "ALER_POSITION": 0.1,  # 警告仓位限制
+    "MAX_POSITION": 0.5,  # 最大仓位限制
+    "DECREASE_POSITION": 0.32,  # 降低仓位触发点
+    "ALER_POSITION": 0.16,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
 }
 
@@ -60,6 +62,8 @@ class GridTradingState:
         self.grid_decrease_status: bool = False  # 降低仓位状态
         self.current_position_size: float = 0  # 当前仓位大小
         self.current_position_sign: int = 0  # 当前仓位方向
+        self.filled_count: int = 0  # 成交订单计数
+        self.price_history: Deque[dict] = deque(maxlen=200) # 最近市场统计数据列表
 
 
 # 全局状态实例
@@ -79,6 +83,9 @@ def on_market_stats_update(market_id: str, market_stats: dict):
     if mark_price:
         trading_state.current_price = float(mark_price)
         # logger.info(f"📊 市场 {market_id} 标记价格更新: ${trading_state.current_price}")
+        
+        # TODO 记录最近的200条价格数据，用于分析价格走势，如果瞬间价格波动剧烈，开单时需注意调大距离，避免被直接吃单，尤其是趋势的一边
+        
 
 
 async def on_account_all_orders_update(account_id: str, orders: dict):
@@ -138,6 +145,7 @@ async def check_order_fills(orders: dict):
 
                 # 如果订单已成交
                 if status in ["filled"] and filled_amount > 0:
+                    trading_state.filled_count += 1
 
                     # logger.info(
                     #     f"🎯 订单成交: ID={client_order_index}, 方向={is_ask}, 价格={price}, 状态={status}, 成交量={filled_amount}"
@@ -878,7 +886,7 @@ async def run_grid_trading():
                 f"💰盈亏情况: 初始: {trading_state.start_collateral}, 当前: {unrealized_collateral}, 盈亏: {round(pnl,6)}"
             )
             logger.info(
-                f"⏱️ 运行时间: {round(time.time() - trading_state.start_time)} 秒, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}"
+                f"⏱️ 运行时间: {round(time.time() - trading_state.start_time)} 秒, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
             )
 
             # get_current_grid_status()
