@@ -446,10 +446,12 @@ async def replenish_grid():
                 break
             logger.info("买单侧需要补单")
             # 价格下降，补低价单
-            low_buy_price = buy_orders_prices[0]
+            grid_single_price = trading_state.grid_single_price
+            low_buy_price = trading_state.current_price - grid_single_price * 2
+            if len(buy_orders_prices) > 0:
+                low_buy_price = buy_orders_prices[0]
             low_sell_price = sell_orders_prices[0]
             # 计算新买单价格
-            grid_single_price = trading_state.grid_single_price
             new_buy_price = round(low_buy_price - grid_single_price, 2)
             if len(buy_orders_prices) == 0:
                 # 瞬间被吃完所有订单时，波动剧烈，增加下单间距，避免被直接吃单
@@ -501,10 +503,12 @@ async def replenish_grid():
                 break
             logger.info("卖单侧需要补单")
             # 价格上升，补高价单
-            high_sell_price = sell_orders_prices[-1]
+            grid_single_price = trading_state.grid_single_price
+            high_sell_price = trading_state.current_price + grid_single_price * 2
+            if len(sell_orders_prices) == 0:
+                high_sell_price = sell_orders_prices[-1]
             high_buy_price = buy_orders_prices[-1]
             # 计算新卖单价格
-            grid_single_price = trading_state.grid_single_price
             new_sell_price = round(high_sell_price + grid_single_price, 2)
             if len(sell_orders_prices) == 0:
                 # 瞬间被吃完所有订单时，波动剧烈，增加下单间距，避免被直接吃单

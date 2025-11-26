@@ -352,7 +352,7 @@ async def candle_stick(
 ) -> pd.DataFrame:
     start_time = int(time.time()) - 3600 * 10  # 10小时前
     end_time = int(time.time())
-    count_back = 500
+    count_back = 30
     resolution = "1m"
 
     resp = await candle_api.candlesticks(
