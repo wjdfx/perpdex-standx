@@ -353,9 +353,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             logger.error("无法获取当前价格，初始化失败")
             return False
         
-        if account_info.total_order_count > 1:
-            logger.info(f"当前账户已有未结订单，以原始订单为准，跳过初始化网格交易")
-            return True
+        
 
         # 放置初始网格订单
         base_price = trading_state.current_price
@@ -366,6 +364,10 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         logger.info(f"🚀 初始化网格交易: 基准价格=${base_price}, 网格数量={grid_count}")
         trading_state.open_price = base_price
 
+        if account_info.total_order_count > 1:
+            logger.info(f"当前账户已有未结订单，以原始订单为准，跳过初始化网格交易")
+            return True
+        
         success = await grid_trading.place_grid_orders(
             base_price, grid_count, grid_amount, grid_spread
         )
@@ -505,7 +507,7 @@ async def replenish_grid():
             # 价格上升，补高价单
             grid_single_price = trading_state.grid_single_price
             high_sell_price = trading_state.current_price + grid_single_price * 2
-            if len(sell_orders_prices) == 0:
+            if len(sell_orders_prices) > 0:
                 high_sell_price = sell_orders_prices[-1]
             high_buy_price = buy_orders_prices[-1]
             # 计算新卖单价格
