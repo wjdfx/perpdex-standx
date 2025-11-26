@@ -82,7 +82,6 @@ def on_market_stats_update(market_id: str, market_stats: dict):
     mark_price = market_stats.get("mark_price")
     if mark_price:
         trading_state.current_price = float(mark_price)
-        # logger.info(f"📊 市场 {market_id} 标记价格更新: ${trading_state.current_price}")
         
         # TODO 记录最近的200条价格数据，用于分析价格走势，如果瞬间价格波动剧烈，开单时需注意调大距离，避免被直接吃单，尤其是趋势的一边
         
@@ -337,7 +336,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             return False, None
         account_info = account_info_resp.accounts[0]
         trading_state.start_collateral = float(account_info.collateral)
-
+        
         # 设置全局网格交易实例
         trading_state.grid_trading = grid_trading
 
@@ -353,6 +352,10 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         if trading_state.current_price is None:
             logger.error("无法获取当前价格，初始化失败")
             return False
+        
+        if account_info.total_order_count > 1:
+            logger.info(f"当前账户已有未结订单，以原始订单为准，跳过初始化网格交易")
+            return True
 
         # 放置初始网格订单
         base_price = trading_state.current_price
@@ -448,10 +451,12 @@ async def replenish_grid():
             # 计算新买单价格
             grid_single_price = trading_state.grid_single_price
             new_buy_price = round(low_buy_price - grid_single_price, 2)
-            # 如果新补买单价格已经高于当前价格，则不补单
-            if new_buy_price >= trading_state.current_price:
-                logger.info("新补买单价格高于当前价格，暂不补单")
-                break
+            if len(buy_orders_prices) == 0:
+                # 瞬间被吃完所有订单时，波动剧烈，增加下单间距，避免被直接吃单
+                new_buy_price = round(
+                    trading_state.current_price - 3 * grid_single_price, 2
+                )
+            
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
                 is_ask=False,
@@ -501,10 +506,12 @@ async def replenish_grid():
             # 计算新卖单价格
             grid_single_price = trading_state.grid_single_price
             new_sell_price = round(high_sell_price + grid_single_price, 2)
-            # 如果新补卖单价格已经低于当前价格，则不补单
-            if new_sell_price <= trading_state.current_price:
-                logger.info("新补卖单价格低于当前价格，暂不补单")
-                return
+            if len(sell_orders_prices) == 0:
+                # 瞬间被吃完所有订单时，波动剧烈，增加下单间距，避免被直接吃单
+                new_sell_price= round(
+                    trading_state.current_price + 3 * grid_single_price, 2
+                )
+            
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
                 is_ask=True,
@@ -869,7 +876,7 @@ async def run_grid_trading():
             trading_state.current_position_sign = int(position.sign)
             if position_size is not None:
                 direction = "多头" if position.sign > 0 else "空头"
-                logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
+                logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}, 清算价格: {position.liquidation_price}")
 
             unrealized_pnl = float(position.unrealized_pnl)
 
