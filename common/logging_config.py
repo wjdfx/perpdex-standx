@@ -2,6 +2,7 @@ import os
 import logging
 from pathlib import Path
 from .config import LOG_LEVEL, LOG_FORMAT
+from logging.handlers import TimedRotatingFileHandler
 
 def setup_logging():
     """
@@ -27,13 +28,13 @@ def setup_logging():
     formatter = logging.Formatter(LOG_FORMAT)
 
     # 正常日志文件处理器 (INFO 及以上)
-    normal_handler = logging.FileHandler(log_dir / 'quant.log', encoding='utf-8')
+    normal_handler = TimedRotatingFileHandler(log_dir / 'quant.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
     normal_handler.setLevel(logging.INFO)
     normal_handler.setFormatter(formatter)
     logging.root.addHandler(normal_handler)
 
     # 错误日志文件处理器 (ERROR 及以上)
-    error_handler = logging.FileHandler(log_dir / 'error.log', encoding='utf-8')
+    error_handler = TimedRotatingFileHandler(log_dir / 'error.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(formatter)
     logging.root.addHandler(error_handler)

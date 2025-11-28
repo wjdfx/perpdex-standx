@@ -1,6 +1,7 @@
 import perp_lighter.quant_grid as quant_grid
+import perp_lighter.quant_grid_long as quant_grid_long
 import asyncio
 
 
 if __name__ == "__main__":
-    asyncio.run(quant_grid.run_grid_trading())
+    asyncio.run(quant_grid_long.run_grid_trading())

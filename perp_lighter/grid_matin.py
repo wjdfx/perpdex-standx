@@ -59,12 +59,13 @@ class GridTrading:
             logger.error(f"检查当前订单时发生错误: {e}")
             return None
 
-    def generate_grid_orders(self, base_price: float, grid_count: int,
+    def generate_grid_orders(self, side: int, base_price: float, grid_count: int,
                             grid_amount: float, grid_spread: float) -> List[Tuple[bool, float, float]]:
         """
         生成双向网格订单列表（中性策略）
 
         Args:
+            side: -1 做空策略，0 中性策略，1 做多策略
             base_price: 基准价格
             grid_count: 网格数量（每侧）
             grid_amount: 单网格挂单量
@@ -76,23 +77,26 @@ class GridTrading:
         orders = []
 
         # 生成买单（ask=False）：基准价格下方
-        for i in range(1, grid_count + 1):
-            buy_price = base_price * (1 - grid_spread * i / 100)
-            orders.append((False, round(buy_price, 2), grid_amount))
+        if side != -1:
+            for i in range(1, grid_count + 1):
+                buy_price = base_price * (1 - grid_spread * i / 100)
+                orders.append((False, round(buy_price, 2), grid_amount))
 
         # 生成卖单（ask=True）：基准价格上方
-        for i in range(1, grid_count + 1):
-            sell_price = base_price * (1 + grid_spread * i / 100)
-            orders.append((True, round(sell_price, 2), grid_amount))
+        if side != 1:
+            for i in range(1, grid_count + 1):
+                sell_price = base_price * (1 + grid_spread * i / 100)
+                orders.append((True, round(sell_price, 2), grid_amount))
 
         return orders
-
-    async def place_grid_orders(self, base_price: float, grid_count: int,
+    
+    async def place_grid_orders(self, side: int, base_price: float, grid_count: int,
                                grid_amount: float, grid_spread: float) -> bool:
         """
         放置双向网格订单（中性策略）
 
         Args:
+            side: -1 做空策略，0 中性策略，1 做多策略
             base_price: 基准价格
             grid_count: 网格数量（每侧）
             grid_amount: 单网格挂单量
@@ -108,7 +112,7 @@ class GridTrading:
             
         try:
             # 生成网格订单
-            orders = self.generate_grid_orders(base_price, grid_count,
+            orders = self.generate_grid_orders(side, base_price, grid_count,
                                               grid_amount, grid_spread)
 
             logger.info(f"生成双向网格订单: 基准价格={base_price}, "
