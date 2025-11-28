@@ -551,6 +551,7 @@ async def replenish_grid(filled_signal: bool):
                 # 补充买单
                 if trading_state.grid_buy_spread_alert:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
+                    break
                 else:
                     if (
                         not trading_state.last_filled_order_is_ask
