@@ -510,8 +510,8 @@ async def replenish_grid(filled_signal: bool):
                     f"卖单侧被吃单补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
                 )
                 
-            # 卖单侧补单
-            if trading_state.current_position_size > len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"]:
+            # 卖单侧补单，如果最后一单被吃，留给大间距补单
+            if trading_state.current_position_size > len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"] and len(trading_state.sell_orders) > 0:
                 new_sell_price = round(
                     new_buy_price + grid_single_price * 2, 2
                 )
@@ -731,6 +731,32 @@ async def check_current_orders():
                     if order_id in trading_state.sell_orders:
                         del trading_state.sell_orders[order_id]
                 logger.info(f"批量取消卖单订单成功: 订单ID列表={cancel_orders}")
+                
+    # 检查重复订单
+    if len(trading_state.sell_orders) > 0:
+        cancel_orders = []
+        # 卖单侧删除从最高价开始删除
+        sell_orders = dict(
+            sorted(
+                trading_state.sell_orders.copy().items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        )
+        prev_price = None
+        for order_id, price in sell_orders.items():
+            if round(price, 0) == round(prev_price, 0):
+                cancel_orders.append(order_id)
+                logger.info(f"检测到重复价格订单，删除订单ID={order_id}, 价格={price}")
+            prev_price = price
+            
+        if len(cancel_count) > 0:
+            success = await trading_state.grid_trading.cancel_grid_orders(cancel_orders)
+            if success:
+                for order_id in cancel_orders:
+                    if order_id in trading_state.sell_orders:
+                        del trading_state.sell_orders[order_id]
+                logger.info(f"删除重复订单成功: 订单ID列表={cancel_orders}")
         
 
     # 当前仓位 + 同方向订单，需要小于最大仓位限制
