@@ -612,7 +612,6 @@ async def replenish_grid(filled_signal: bool):
                     else:
                         if (
                             trading_state.last_filled_order_is_ask
-                            and not trading_state.grid_buy_spread_alert
                         ):
                             # 如果上次成交订单是卖单，且当前没有买单警告价差状态，则不补充卖单，买单警告状态时，允许补充卖单以平衡仓位
                             logger.info("当前成交订单为卖单，不补充卖单")
