@@ -745,7 +745,7 @@ async def check_current_orders():
         )
         prev_price = None
         for order_id, price in sell_orders.items():
-            if round(price, 0) == round(prev_price, 0):
+            if prev_price is not None and round(price, 0) == round(prev_price, 0):
                 cancel_orders.append(order_id)
                 logger.info(f"检测到重复价格订单，删除订单ID={order_id}, 价格={price}")
             prev_price = price
