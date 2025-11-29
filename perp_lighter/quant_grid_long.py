@@ -750,7 +750,7 @@ async def check_current_orders():
                 logger.info(f"检测到重复价格订单，删除订单ID={order_id}, 价格={price}")
             prev_price = price
             
-        if len(cancel_count) > 0:
+        if len(cancel_orders) > 0:
             success = await trading_state.grid_trading.cancel_grid_orders(cancel_orders)
             if success:
                 for order_id in cancel_orders:
