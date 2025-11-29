@@ -440,7 +440,6 @@ async def replenish_grid(filled_signal: bool):
             if len(buy_orders_prices) > 0:
                 low_buy_price = buy_orders_prices[0]
             # 计算新买单价格
-            new_buy_price = round(low_buy_price - grid_single_price, 2)
             if trading_state.grid_buy_spread_alert:
                 # 倾斜期间，距离翻倍
                 grid_single_price = trading_state.grid_single_price * 2
@@ -449,6 +448,8 @@ async def replenish_grid(filled_signal: bool):
                 new_buy_price = round(
                     trading_state.current_price - 3 * trading_state.grid_single_price, 2
                 )
+            new_buy_price = round(low_buy_price - grid_single_price, 2)
+                
 
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
