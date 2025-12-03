@@ -578,7 +578,7 @@ async def replenish_grid(filled_signal: bool):
             > 2.5 * trading_state.active_grid_signle_price
             and not trading_state.grid_pause
         ):
-            while (
+            if (
                 trading_state.current_price - high_buy_price
                 > trading_state.active_grid_signle_price * 1.5
                 and len(trading_state.buy_prices) < GRID_CONFIG["MAX_TOTAL_ORDERS"]
@@ -590,7 +590,7 @@ async def replenish_grid(filled_signal: bool):
                 ):
                     # 如果上次成交订单是买单，则不补充买单
                     logger.info("当前成交订单为买单，不补充买单")
-                    break
+                    # break
                 else:
                     new_buy_price = round(
                         high_buy_price + trading_state.active_grid_signle_price, 2
