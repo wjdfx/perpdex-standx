@@ -507,3 +507,16 @@ class GridTrading:
         }
         # logger.info("急跌检测: %s", details | {"result": result})
         return result, details
+    
+    async def current_atr(
+        self,
+        df: pd.DataFrame,
+        atr_period: int = 14,
+    ) -> Optional[float]:
+        if df is None or len(df) < atr_period:
+            logger.warning("ATR计算数据不足")
+            return None
+
+        atr_series = quota.compute_atr(df, period=atr_period)
+        atr_value = float(atr_series.iloc[-1])
+        return atr_value

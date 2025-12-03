@@ -35,6 +35,7 @@ GRID_CONFIG = {
     "DECREASE_POSITION": 0.4,  # 降低仓位触发点
     "ALER_POSITION": 0.2,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
+    "ATR_THRESHOLD": 3,  # ATR波动阈值
 }
 
 
@@ -67,6 +68,7 @@ class GridTradingState:
         self.filled_count: int = 0  # 成交订单计数
         self.price_history: Deque[dict] = deque(maxlen=200)  # 最近市场统计数据列表
         self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
+        self.current_atr: float = 0.0  # 当前ATR值
 
 
 # 全局状态实例
@@ -582,41 +584,37 @@ async def replenish_grid(filled_signal: bool):
                 and len(trading_state.buy_prices) < GRID_CONFIG["MAX_TOTAL_ORDERS"]
             ):
                 # 补充买单
-                if trading_state.grid_buy_spread_alert:
-                    logger.info("当前处于买单警告价差状态，大间距暂不补单")
+                if (
+                    not trading_state.last_filled_order_is_ask
+                    and len(trading_state.sell_orders) > 0
+                ):
+                    # 如果上次成交订单是买单，则不补充买单
+                    logger.info("当前成交订单为买单，不补充买单")
                     break
                 else:
-                    if (
-                        not trading_state.last_filled_order_is_ask
-                        and len(trading_state.sell_orders) > 0
-                    ):
-                        # 如果上次成交订单是买单，则不补充买单
-                        logger.info("当前成交订单为买单，不补充买单")
-                        break
-                    else:
-                        new_buy_price = round(
-                            high_buy_price + trading_state.active_grid_signle_price, 2
+                    new_buy_price = round(
+                        high_buy_price + trading_state.active_grid_signle_price, 2
+                    )
+                    # 如果新补买单价格已经高于当前价格，则不补单
+                    if new_buy_price >= trading_state.current_price:
+                        logger.info("新补买单价格高于当前价格，暂不补单")
+                        return
+                    success, order_id = (
+                        await trading_state.grid_trading.place_single_order(
+                            is_ask=False,
+                            price=new_buy_price,
+                            amount=GRID_CONFIG["GRID_AMOUNT"],
                         )
-                        # 如果新补买单价格已经高于当前价格，则不补单
-                        if new_buy_price >= trading_state.current_price:
-                            logger.info("新补买单价格高于当前价格，暂不补单")
-                            return
-                        success, order_id = (
-                            await trading_state.grid_trading.place_single_order(
-                                is_ask=False,
-                                price=new_buy_price,
-                                amount=GRID_CONFIG["GRID_AMOUNT"],
-                            )
+                    )
+                    if success:
+                        # 更新buy_orders_prices而不是trading_state.buy_prices
+                        buy_orders_prices.append(new_buy_price)
+                        buy_orders_prices.sort()
+                        high_buy_price = buy_orders_prices[-1]
+                        trading_state.buy_orders[order_id] = new_buy_price
+                        logger.info(
+                            f"大间距补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
                         )
-                        if success:
-                            # 更新buy_orders_prices而不是trading_state.buy_prices
-                            buy_orders_prices.append(new_buy_price)
-                            buy_orders_prices.sort()
-                            high_buy_price = buy_orders_prices[-1]
-                            trading_state.buy_orders[order_id] = new_buy_price
-                            logger.info(
-                                f"大间距补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
-                            )
 
             # 补充卖单
             if (
@@ -1069,6 +1067,24 @@ async def run_grid_trading():
                     )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
 
                     raw_step = 0.8 * round(jidie_details.get("atr"), 2)
+                    trading_state.active_grid_signle_price = max(
+                        min_step, min(raw_step, max_step)
+                    )
+                else:
+                    trading_state.active_grid_signle_price = (
+                        trading_state.base_grid_single_price
+                    )
+                    
+                # 波动检测
+                atr_value = jidie_details.get("atr")
+                trading_state.current_atr = atr_value
+                if atr_value > GRID_CONFIG["ATR_THRESHOLD"]:
+                    min_step = trading_state.base_grid_single_price
+                    max_step = (
+                        trading_state.base_grid_single_price * 30
+                    )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
+
+                    raw_step = 0.8 * round(atr_value, 2)
                     trading_state.active_grid_signle_price = max(
                         min_step, min(raw_step, max_step)
                     )
