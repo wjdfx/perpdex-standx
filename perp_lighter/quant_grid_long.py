@@ -574,14 +574,12 @@ async def replenish_grid(filled_signal: bool):
         if (
             low_sell_price - high_buy_price
             > 2.5 * trading_state.active_grid_signle_price
+            and not trading_state.grid_pause
         ):
             while (
                 trading_state.current_price - high_buy_price
                 > trading_state.active_grid_signle_price * 1.5
             ):
-                if trading_state.grid_pause:
-                    logger.info(f"❗️当前处于停止下单状态...")
-                    break
                 # 补充买单
                 if trading_state.grid_buy_spread_alert:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
