@@ -538,7 +538,8 @@ async def replenish_grid(filled_signal: bool):
                 and len(trading_state.sell_orders) > 0
                 and trading_state.current_position_sign > 0
             ):
-                new_sell_price = round(new_buy_price + grid_single_price * 2, 2)
+                high_buy_price = buy_orders_prices[-1]
+                new_sell_price = round(high_buy_price + grid_single_price * 2, 2)
                 if len(sell_orders_prices) > 0:
                     new_sell_price = sell_orders_prices[-1] + grid_single_price
 
@@ -694,8 +695,8 @@ async def replenish_grid(filled_signal: bool):
                     f"卖单数量不足补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
                 )
 
-    except Exception as e:
-        logger.error(f"补充网格订单时发生错误: {e}")
+    except Exception:
+        logger.exception(f"补充网格订单时发生错误")
 
 
 async def check_current_orders():
@@ -1081,7 +1082,7 @@ async def run_grid_trading():
                 if counter % 6 == 0:
                     logger.info("急跌检测: %s", jidie_details | {"result": is_jidie})
                     cs_5m = await grid_trading.candle_stick(
-                        market_id=0, resolution="5m"
+                        market_id=0, resolution="15m"
                     )
                     is_yindie, yindie_details = await grid_trading.is_yindie(cs_5m)
                     logger.info("阴跌检测: %s", yindie_details | {"result": is_yindie})
