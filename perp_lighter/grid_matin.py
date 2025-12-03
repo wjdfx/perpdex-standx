@@ -461,7 +461,7 @@ class GridTrading:
             "mdi": mdi_value,
             "rsi": rsi_value,
         }
-        logger.info("阴跌检测: %s", details | {"result": result})
+        # logger.info("阴跌检测: %s", details | {"result": result})
         return result, details
 
     async def is_jidie(

@@ -1079,10 +1079,12 @@ async def run_grid_trading():
 
                 # 每60秒执行一次（10秒 * 6 = 60秒）
                 if counter % 6 == 0:
+                    logger.info("急跌检测: %s", jidie_details | {"result": is_jidie})
                     cs_5m = await grid_trading.candle_stick(
                         market_id=0, resolution="5m"
                     )
                     is_yindie, yindie_details = await grid_trading.is_yindie(cs_5m)
+                    logger.info("阴跌检测: %s", yindie_details | {"result": is_yindie})
                     if is_yindie:
                         logger.info(f"⚠️ 警告：当前阴跌中, {yindie_details}")
                         trading_state.grid_pause = True
