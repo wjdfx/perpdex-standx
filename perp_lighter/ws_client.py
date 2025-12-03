@@ -512,7 +512,12 @@ class UnifiedWebSocketClient:
             self.market_stats_states[market_id] = market_stats
 
             # 调用回调函数
-            self.on_market_stats_update(market_id, market_stats)
+            if asyncio.iscoroutinefunction(self.on_market_stats_update):
+                # 如果回调函数是异步的，直接等待它
+                await self.on_market_stats_update(market_id, market_stats)
+            else:
+                # 如果回调函数是同步的，直接调用
+                self.on_market_stats_update(market_id, market_stats)
 
         except Exception as e:
             logger.error(f"Error handling market stats update: {e}")
@@ -644,8 +649,8 @@ class UnifiedWebSocketClient:
             # 调用回调函数
             self.on_account_all_positions_update(account_id, positions)
 
-        except Exception as e:
-            logger.error(f"Error handling account all positions update: {e}")
+        except Exception:
+            logger.exception("Error handling account all positions update")
 
     async def handle_update_account_all_positions_async(self, message):
         """
@@ -674,8 +679,8 @@ class UnifiedWebSocketClient:
                 # 如果回调函数是同步的，直接调用
                 self.on_account_all_positions_update(account_id, positions)
 
-        except Exception as e:
-            logger.error(f"Error handling account all positions update: {e}")
+        except Exception:
+            logger.exception("Error handling account all positions update")
 
     def handle_generic_message(self, message):
         """

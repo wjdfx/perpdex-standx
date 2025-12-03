@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 import json
 import asyncio
 import time
+import pandas as pd
 from typing import Dict, List, Optional, Set, Tuple
 import lighter
 from lighter.signer_client import CODE_OK
@@ -26,7 +27,7 @@ from typing import Deque
 
 # 网格交易参数配置
 GRID_CONFIG = {
-    "GRID_COUNT": 4,  # 每侧网格数量
+    "GRID_COUNT": 3,  # 每侧网格数量
     "GRID_AMOUNT": 0.01,  # 单网格挂单量
     "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
     "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
@@ -49,7 +50,8 @@ class GridTradingState:
         self.sell_orders: dict[str, float] = {}  # 卖单订单ID到价格映射
         self.original_buy_prices: List[float] = []  # 原始买单价格序列
         self.original_sell_prices: List[float] = []  # 原始卖单价格序列
-        self.grid_single_price: float = 0  # 单网格价差值
+        self.base_grid_single_price: float = 0  # 单网格价差值
+        self.active_grid_signle_price: float = 0  # 动态单网格价差值
         self.start_collateral: float = 0  # 初始保证金
         self.current_collateral: float = 0  # 当前保证金
         self.start_time: float = time.time()  # 启动时间
@@ -64,6 +66,7 @@ class GridTradingState:
         self.current_position_sign: int = 0  # 当前仓位方向
         self.filled_count: int = 0  # 成交订单计数
         self.price_history: Deque[dict] = deque(maxlen=200)  # 最近市场统计数据列表
+        self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
 
 
 # 全局状态实例
@@ -73,17 +76,34 @@ trading_state = GridTradingState()
 replenish_grid_lock = asyncio.Lock()
 
 
-def on_market_stats_update(market_id: str, market_stats: dict):
+async def on_market_stats_update(market_id: str, market_stats: dict):
     """
     处理市场统计数据更新
     """
     global trading_state
 
-    mark_price = market_stats.get("mark_price")
+    mark_price = float(market_stats.get("mark_price"))
     if mark_price:
-        trading_state.current_price = float(mark_price)
+        trading_state.current_price = mark_price
 
-        # TODO 记录最近的200条价格数据，用于分析价格走势，如果瞬间价格波动剧烈，开单时需注意调大距离，避免被直接吃单，尤其是趋势的一边
+        cs_1m = trading_state.candle_stick_1m
+        if trading_state.grid_trading is not None and cs_1m is not None:
+            try:
+                is_jidie, jidie_details = await trading_state.grid_trading.is_jidie(
+                    cs_1m, close=mark_price
+                )
+                if is_jidie:
+                    min_step = trading_state.base_grid_single_price
+                    max_step = (
+                        trading_state.base_grid_single_price * 30
+                    )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
+
+                    raw_step = 0.8 * round(jidie_details.get("atr"), 2)
+                    trading_state.active_grid_signle_price = max(
+                        min_step, min(raw_step, max_step)
+                    )
+            except Exception as e:
+                logger.error(f"Error checking jidie in market stats update: {e}")
 
 
 async def on_account_all_orders_update(account_id: str, orders: dict):
@@ -231,14 +251,18 @@ def check_position_limits(positions: dict):
     """
     global trading_state
 
+    if len(trading_state.original_buy_prices) == 0:
+        logger.info("等待初始化完成...")
+        return
+
     for market_id, position in positions.items():
         position_size = abs(float(position.get("position", 0)))
         trading_state.current_position_size = position_size
         sign = int(position.get("sign", "0"))
         alert_pos = GRID_CONFIG["ALER_POSITION"]
         decrease_position = GRID_CONFIG["DECREASE_POSITION"]
-        direction = "多头" if sign > 0 else "空头"
-        logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
+        # direction = "多头" if sign > 0 else "空头"
+        # logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
         if position_size == 0:
             return
         # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
@@ -254,7 +278,7 @@ def check_position_limits(positions: dict):
                 trading_state.grid_sell_spread_alert = True
 
             # logger.info("当前处于警告价差状态，补单间距加倍")
-            # trading_state.grid_single_price = (
+            # trading_state.base_grid_single_price = (
             #     trading_state.original_buy_prices[1]
             #     - trading_state.original_buy_prices[0]
             # ) * 2
@@ -267,7 +291,7 @@ def check_position_limits(positions: dict):
         else:
             trading_state.grid_buy_spread_alert = False
             trading_state.grid_sell_spread_alert = False
-            trading_state.grid_single_price = (
+            trading_state.base_grid_single_price = (
                 trading_state.original_buy_prices[1]
                 - trading_state.original_buy_prices[0]
             )
@@ -374,8 +398,11 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             trading_state.buy_prices.sort()
 
             # 单网格价差值
-            trading_state.grid_single_price = (
+            trading_state.base_grid_single_price = (
                 trading_state.buy_prices[1] - trading_state.buy_prices[0]
+            )
+            trading_state.active_grid_signle_price = (
+                trading_state.base_grid_single_price
             )
 
             # 保存原始价格序列
@@ -419,37 +446,32 @@ async def replenish_grid(filled_signal: bool):
     sell_orders_prices = sorted(list(trading_state.sell_orders.values()))
 
     if len(buy_orders_prices) == 0 and len(sell_orders_prices) == 0:
-        return
-    
-    if trading_state.grid_buy_spread_alert and trading_state.grid_decrease_status:
-        logger.info("当前处于买单警告价差，停止下单")
-        return
+        # 初始化网格交易
+        if not await initialize_grid_trading(trading_state.grid_trading):
+            logger.error("网格交易初始化失败，退出")
+            return
 
     try:
-        high_buy_price = trading_state.current_price - trading_state.grid_single_price
+        high_buy_price = (
+            trading_state.current_price - trading_state.active_grid_signle_price
+        )
         if len(buy_orders_prices) > 0:
             high_buy_price = buy_orders_prices[-1]
 
         # 买单侧被吃单到需要补单时
-        if len(buy_orders_prices) < GRID_CONFIG["GRID_COUNT"] or (filled_signal and not trading_state.last_filled_order_is_ask):
+        if len(buy_orders_prices) < GRID_CONFIG["GRID_COUNT"] or (
+            filled_signal and not trading_state.last_filled_order_is_ask
+            and not trading_state.grid_pause
+        ):
             # 买单侧补单
             logger.info("买单侧被吃单补单")
             # 价格下降，补低价单
-            grid_single_price = trading_state.grid_single_price
+            grid_single_price = trading_state.active_grid_signle_price
             low_buy_price = trading_state.current_price - grid_single_price * 2
             if len(buy_orders_prices) > 0:
                 low_buy_price = buy_orders_prices[0]
             # 计算新买单价格
-            if trading_state.grid_buy_spread_alert:
-                # 倾斜期间，距离翻倍
-                grid_single_price = trading_state.grid_single_price * 2
-            if len(buy_orders_prices) == 0:
-                # 瞬间被吃完所有订单时，波动剧烈，增加下单间距，避免被直接吃单
-                new_buy_price = round(
-                    trading_state.current_price - 3 * trading_state.grid_single_price, 2
-                )
             new_buy_price = round(low_buy_price - grid_single_price, 2)
-                
 
             # 执行订单补充
             success, order_id = await trading_state.grid_trading.place_single_order(
@@ -467,58 +489,59 @@ async def replenish_grid(filled_signal: bool):
                 )
 
             # 卖单侧补单
-            new_sell_price = round(
-                high_buy_price + grid_single_price * 2, 2
-            )
-            # 当前价格超过新补单价格时，补充到远距离
-            if trading_state.current_price > new_sell_price:
-                new_sell_price = round(new_sell_price + grid_single_price)
-                if len(sell_orders_prices) > 0:
-                    new_sell_price = round(sell_orders_prices[-1] + grid_single_price)
-            # 执行订单补充
-            success, order_id = await trading_state.grid_trading.place_single_order(
-                is_ask=True,
-                price=new_sell_price,
-                amount=GRID_CONFIG["GRID_AMOUNT"],
-            )
-            if success:
-                # 更新sell_orders_prices而不是trading_state.sell_prices
-                sell_orders_prices.append(new_sell_price)
-                sell_orders_prices.sort()
-                trading_state.sell_orders[order_id] = new_sell_price
-                logger.info(
-                    f"买单侧被吃单补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
+            new_sell_price = round(high_buy_price + grid_single_price * 2, 2)
+            if len(sell_orders_prices) > 0:
+                new_sell_price = sell_orders_prices[0] - grid_single_price
+            # 当前价格超过新补单价格时，不补单
+            if trading_state.current_price < new_sell_price:
+                # 执行订单补充
+                success, order_id = await trading_state.grid_trading.place_single_order(
+                    is_ask=True,
+                    price=new_sell_price,
+                    amount=GRID_CONFIG["GRID_AMOUNT"],
                 )
-        
+                if success:
+                    # 更新sell_orders_prices而不是trading_state.sell_prices
+                    sell_orders_prices.append(new_sell_price)
+                    sell_orders_prices.sort()
+                    trading_state.sell_orders[order_id] = new_sell_price
+                    logger.info(
+                        f"买单侧被吃单补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
+                    )
+
         # 卖单侧被吃单
         if filled_signal and trading_state.last_filled_order_is_ask:
             logger.info("卖单侧被吃单补单")
-            # 买单侧补单
-            grid_single_price = trading_state.grid_single_price
-            new_buy_price = round(high_buy_price + grid_single_price, 2)
-            # 执行订单补充
-            success, order_id = await trading_state.grid_trading.place_single_order(
-                is_ask=False,
-                price=new_buy_price,
-                amount=GRID_CONFIG["GRID_AMOUNT"],
-            )
-            if success:
-                # 更新buy_orders_prices而不是trading_state.buy_prices
-                buy_orders_prices.append(new_buy_price)
-                buy_orders_prices.sort()
-                trading_state.buy_orders[order_id] = new_buy_price
-                logger.info(
-                    f"卖单侧被吃单补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
+            if not trading_state.grid_pause:
+                # 买单侧补单
+                grid_single_price = trading_state.active_grid_signle_price
+                new_buy_price = round(high_buy_price + grid_single_price, 2)
+                # 执行订单补充
+                success, order_id = await trading_state.grid_trading.place_single_order(
+                    is_ask=False,
+                    price=new_buy_price,
+                    amount=GRID_CONFIG["GRID_AMOUNT"],
                 )
-                
+                if success:
+                    # 更新buy_orders_prices而不是trading_state.buy_prices
+                    buy_orders_prices.append(new_buy_price)
+                    buy_orders_prices.sort()
+                    trading_state.buy_orders[order_id] = new_buy_price
+                    logger.info(
+                        f"卖单侧被吃单补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
+                    )
+
             # 卖单侧补单，如果最后一单被吃，留给大间距补单
-            if trading_state.current_position_size > len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"] and len(trading_state.sell_orders) > 0:
-                new_sell_price = round(
-                    new_buy_price + grid_single_price * 2, 2
-                )
+            if (
+                trading_state.current_position_size
+                > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
+                and len(trading_state.sell_orders) > 0
+                and trading_state.current_position_sign > 0
+            ):
+                new_sell_price = round(new_buy_price + grid_single_price * 2, 2)
                 if len(sell_orders_prices) > 0:
                     new_sell_price = sell_orders_prices[-1] + grid_single_price
-                    
+
                 # 执行订单补充
                 success, order_id = await trading_state.grid_trading.place_single_order(
                     is_ask=True,
@@ -533,22 +556,31 @@ async def replenish_grid(filled_signal: bool):
                     logger.info(
                         f"卖单侧被吃单补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
                     )
-                           
 
         # 大间距补单，如果卖单最低价和买单最高价差距大于 2 * GRID_SPREAD，则补充中间价单
         buy_orders_prices = sorted(list(trading_state.buy_orders.values()))
         sell_orders_prices = sorted(list(trading_state.sell_orders.values()))
-        low_sell_price = trading_state.current_price + trading_state.grid_single_price
+        low_sell_price = (
+            trading_state.current_price + trading_state.active_grid_signle_price * 2
+        )
         if len(sell_orders_prices) > 0:
             low_sell_price = sell_orders_prices[0]
-        high_buy_price = trading_state.current_price - trading_state.grid_single_price
+        high_buy_price = (
+            trading_state.current_price - trading_state.active_grid_signle_price * 2
+        )
         if len(buy_orders_prices) > 0:
             high_buy_price = buy_orders_prices[-1]
-        if low_sell_price - high_buy_price > 2.5 * trading_state.grid_single_price:
+        if (
+            low_sell_price - high_buy_price
+            > 2.5 * trading_state.active_grid_signle_price
+        ):
             while (
                 trading_state.current_price - high_buy_price
-                > trading_state.grid_single_price * 1.5
+                > trading_state.active_grid_signle_price * 1.5
             ):
+                if trading_state.grid_pause:
+                    logger.info(f"❗️当前处于停止下单状态...")
+                    break
                 # 补充买单
                 if trading_state.grid_buy_spread_alert:
                     logger.info("当前处于买单警告价差状态，大间距暂不补单")
@@ -563,7 +595,7 @@ async def replenish_grid(filled_signal: bool):
                         break
                     else:
                         new_buy_price = round(
-                            high_buy_price + trading_state.grid_single_price, 2
+                            high_buy_price + trading_state.active_grid_signle_price, 2
                         )
                         # 如果新补买单价格已经高于当前价格，则不补单
                         if new_buy_price >= trading_state.current_price:
@@ -586,59 +618,81 @@ async def replenish_grid(filled_signal: bool):
                                 f"大间距补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
                             )
 
-            buy_orders_prices = sorted(list(trading_state.buy_orders.values()))
-            sell_orders_prices = sorted(list(trading_state.sell_orders.values()))
-            low_sell_price = (
-                trading_state.current_price + trading_state.grid_single_price
-            )
-            if len(sell_orders_prices) > 0:
-                low_sell_price = sell_orders_prices[0]
-            high_buy_price = (
-                trading_state.current_price - trading_state.grid_single_price
-            )
-            if len(buy_orders_prices) > 0:
-                high_buy_price = buy_orders_prices[-1]
+            # 补充卖单
             if (
                 low_sell_price - trading_state.current_price
-                > trading_state.grid_single_price * 1.5
+                > trading_state.active_grid_signle_price * 1.5
             ):
                 # 卖单订单仓位要永远小于多单持仓仓位量
                 if (
                     trading_state.current_position_size
-                    > len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"]
+                    > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
+                    and trading_state.current_position_sign > 0
                 ):
-                    # 补充卖单
-                    if trading_state.grid_sell_spread_alert:
-                        logger.info("当前处于卖单警告价差状态，大间距暂不补单")
+                    if (
+                        trading_state.last_filled_order_is_ask
+                        and len(sell_orders_prices) > 0
+                    ):
+                        # 如果上次成交订单是卖单，则不补充卖单
+                        logger.info("当前成交订单为卖单，不补充卖单")
                     else:
-                        if (
-                            trading_state.last_filled_order_is_ask
-                        ):
-                            # 如果上次成交订单是卖单，且当前没有买单警告价差状态，则不补充卖单，买单警告状态时，允许补充卖单以平衡仓位
-                            logger.info("当前成交订单为卖单，不补充卖单")
-                        else:
-                            new_sell_price = round(
-                                low_sell_price - trading_state.grid_single_price, 2
+                        new_sell_price = round(
+                            low_sell_price - trading_state.active_grid_signle_price,
+                            2,
+                        )
+                        # 如果新补卖单价格已经低于当前价格，则不补单
+                        if new_sell_price <= trading_state.current_price:
+                            logger.info("新补卖单价格低于当前价格，暂不补单")
+                            return
+                        success, order_id = (
+                            await trading_state.grid_trading.place_single_order(
+                                is_ask=True,
+                                price=new_sell_price,
+                                amount=GRID_CONFIG["GRID_AMOUNT"],
                             )
-                            # 如果新补卖单价格已经低于当前价格，则不补单
-                            if new_sell_price <= trading_state.current_price:
-                                logger.info("新补卖单价格低于当前价格，暂不补单")
-                                return
-                            success, order_id = (
-                                await trading_state.grid_trading.place_single_order(
-                                    is_ask=True,
-                                    price=new_sell_price,
-                                    amount=GRID_CONFIG["GRID_AMOUNT"],
-                                )
+                        )
+                        if success:
+                            # 更新sell_orders_prices而不是trading_state.sell_prices
+                            sell_orders_prices.append(new_sell_price)
+                            sell_orders_prices.sort()
+                            trading_state.sell_orders[order_id] = new_sell_price
+                            logger.info(
+                                f"大间距补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
                             )
-                            if success:
-                                # 更新sell_orders_prices而不是trading_state.sell_prices
-                                sell_orders_prices.append(new_sell_price)
-                                sell_orders_prices.sort()
-                                trading_state.sell_orders[order_id] = new_sell_price
-                                logger.info(
-                                    f"大间距补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
-                                )
+
+        # 卖单侧补充不少于配置单的数量,只向远距离补单
+        while (
+            len(trading_state.sell_orders) < GRID_CONFIG["GRID_COUNT"]
+            and trading_state.current_position_size
+            > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
+            and trading_state.current_position_sign > 0
+        ):
+            high_sell_price = low_sell_price
+            if len(sell_orders_prices) > 0:
+                high_sell_price = sell_orders_prices[-1]
+            new_sell_price = round(
+                high_sell_price + trading_state.active_grid_signle_price,
+                2,
+            )
+            # 如果新补卖单价格已经低于当前价格，则不补单
+            if new_sell_price <= trading_state.current_price:
+                logger.info("新补卖单价格低于当前价格，暂不补单")
+                return
+            success, order_id = (
+                await trading_state.grid_trading.place_single_order(
+                    is_ask=True,
+                    price=new_sell_price,
+                    amount=GRID_CONFIG["GRID_AMOUNT"],
+                )
+            )
+            if success:
+                # 更新sell_orders_prices而不是trading_state.sell_prices
+                sell_orders_prices.append(new_sell_price)
+                sell_orders_prices.sort()
+                trading_state.sell_orders[order_id] = new_sell_price
+                logger.info(
+                    f"卖单数量不足补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
+                )
 
     except Exception as e:
         logger.error(f"补充网格订单时发生错误: {e}")
@@ -653,14 +707,14 @@ async def check_current_orders():
     global trading_state
 
     # 如果有一侧订单过多，取消最远的订单
-    if len(trading_state.buy_orders) > GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+    if len(trading_state.buy_orders) > GRID_CONFIG["GRID_COUNT"] + 2:
         cancel_orders = []
         # 买单侧删除从最低价开始删除
         buy_orders = dict(
             sorted(trading_state.buy_orders.items(), key=lambda item: item[1])
         )
         cancel_count = (
-            len(trading_state.buy_orders) - GRID_CONFIG["MAX_TOTAL_ORDERS"] / 2
+            len(trading_state.buy_orders) - (GRID_CONFIG["GRID_COUNT"] + 2)
         )
         for order_id, price in buy_orders.items():
             if len(cancel_orders) < cancel_count:
@@ -702,8 +756,12 @@ async def check_current_orders():
                 if order_id in trading_state.sell_orders:
                     del trading_state.sell_orders[order_id]
             logger.info(f"批量取消卖单订单成功: 订单ID列表={cancel_orders}")
-    
-    if len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"] > trading_state.current_position_size:
+
+    # 卖单侧订单不能超过买单持仓量
+    if (
+        len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"]
+        > trading_state.current_position_size
+    ):
         logger.info(f"卖单订单超过买单持仓数量，删除多余订单")
         cancel_orders = []
         # 卖单侧删除从最高价开始删除
@@ -715,7 +773,8 @@ async def check_current_orders():
             )
         )
         cancel_count = (
-            len(trading_state.sell_orders) - trading_state.current_position_size / GRID_CONFIG["GRID_AMOUNT"]
+            len(trading_state.sell_orders)
+            - trading_state.current_position_size / GRID_CONFIG["GRID_AMOUNT"]
         )
         if cancel_count > 0:
             for order_id, price in sell_orders.items():
@@ -731,7 +790,7 @@ async def check_current_orders():
                     if order_id in trading_state.sell_orders:
                         del trading_state.sell_orders[order_id]
                 logger.info(f"批量取消卖单订单成功: 订单ID列表={cancel_orders}")
-                
+
     # 检查重复订单
     if len(trading_state.sell_orders) > 0:
         cancel_orders = []
@@ -749,7 +808,7 @@ async def check_current_orders():
                 cancel_orders.append(order_id)
                 logger.info(f"检测到重复价格订单，删除订单ID={order_id}, 价格={price}")
             prev_price = price
-            
+
         if len(cancel_orders) > 0:
             success = await trading_state.grid_trading.cancel_grid_orders(cancel_orders)
             if success:
@@ -757,7 +816,37 @@ async def check_current_orders():
                     if order_id in trading_state.sell_orders:
                         del trading_state.sell_orders[order_id]
                 logger.info(f"删除重复订单成功: 订单ID列表={cancel_orders}")
-        
+                
+    # 如果订单中间距离过大，取消最远订单
+    if len(trading_state.sell_orders) > 0:
+        cancel_orders = []
+        # 正序排列
+        sell_orders = dict(
+            sorted(
+                trading_state.sell_orders.items(),
+                key=lambda item: item[1],
+            )
+        )
+        prev_price = None
+        faraway = False
+        for order_id, price in sell_orders.items():
+            if prev_price is not None and not faraway:
+                if price - prev_price > trading_state.active_grid_signle_price * 1.5:
+                    # 价格间距过大，取消所有大于此价格的订单
+                    cancel_orders.append(order_id)
+                    logger.info(f"检测到价格间距过大，删除订单ID={order_id}, 价格={price}")
+                    faraway = True
+            if faraway:
+                cancel_orders.append(order_id)
+            prev_price = price
+            
+        if len(cancel_orders) > 0:
+            success = await trading_state.grid_trading.cancel_grid_orders(cancel_orders)
+            if success:
+                for order_id in cancel_orders:
+                    if order_id in trading_state.sell_orders:
+                        del trading_state.sell_orders[order_id]
+                logger.info(f"删除间距过大订单成功: 订单ID列表={cancel_orders}")
 
     # 当前仓位 + 同方向订单，需要小于最大仓位限制
     if trading_state.current_position_size > GRID_CONFIG["ALER_POSITION"] / 2:
@@ -917,58 +1006,98 @@ async def run_grid_trading():
             return
 
         # 保持运行并监控
+        counter = 0
         while trading_state.is_running:
 
-            # 每10秒打印一次网格状态
-            await asyncio.sleep(10)
-            # 额外检查是否需要补单
-            async with replenish_grid_lock:
-                # 订阅消息补单时间大于一定时间后，才进行常规检查补单
-                if time.time() - trading_state.last_replenish_time > 5:
-                    # 检查当前订单是否合理
-                    await check_current_orders()
-                    # 补充网格订单
-                    await replenish_grid(False)
+            try:
+                # 每10秒打印一次网格状态
+                await asyncio.sleep(10)
+                # 额外检查是否需要补单
+                async with replenish_grid_lock:
+                    # 订阅消息补单时间大于一定时间后，才进行常规检查补单
+                    if time.time() - trading_state.last_replenish_time > 5:
+                        # 检查当前订单是否合理
+                        await check_current_orders()
+                        # 补充网格订单
+                        await replenish_grid(False)
 
-            # 检查仓位状态
-            account_info_resp = await account_api.account(
-                by="index", value=str(ACCOUNT_INDEX)
-            )
-            if account_info_resp.code != CODE_OK:
-                logger.info(f"获取账户信息失败: {account_info_resp.message}")
-                return False, None
-            account_info = account_info_resp.accounts[0]
+                # 检查仓位状态
+                account_info_resp = await account_api.account(
+                    by="index", value=str(ACCOUNT_INDEX)
+                )
+                if account_info_resp.code != CODE_OK:
+                    logger.info(f"获取账户信息失败: {account_info_resp.message}")
+                    return False, None
+                account_info = account_info_resp.accounts[0]
 
-            position = account_info.positions[0]
-            position_size = position.position
-            trading_state.current_position_size = abs(float(position_size))
-            trading_state.current_position_sign = int(position.sign)
-            if position_size is not None:
-                direction = "多头" if position.sign > 0 else "空头"
+                position = account_info.positions[0]
+                position_size = position.position
+                trading_state.current_position_size = abs(float(position_size))
+                trading_state.current_position_sign = int(position.sign)
+                if position_size is not None:
+                    direction = "多头" if position.sign > 0 else "空头"
+                    logger.info(
+                        f"📊 当前仓位: {position_size}, 方向: {direction}, 清算价格: {position.liquidation_price}"
+                    )
+
+                unrealized_pnl = float(position.unrealized_pnl)
+
+                # 检查当前账户保证金
+                trading_state.current_collateral = float(account_info.collateral)
+
+                unrealized_collateral = (
+                    trading_state.current_collateral + unrealized_pnl
+                )
+                pnl = unrealized_collateral - trading_state.start_collateral
                 logger.info(
-                    f"📊 当前仓位: {position_size}, 方向: {direction}, 清算价格: {position.liquidation_price}"
+                    f"💰盈亏情况: 初始: {round(trading_state.start_collateral, 6)}, 当前: {round(unrealized_collateral, 6)}, 盈亏: {round(pnl,6)}, 网格间距: {round(trading_state.active_grid_signle_price, 2)}"
+                )
+                logger.info(
+                    f"⏱️ 运行时间: {round(time.time() - trading_state.start_time)} 秒, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
                 )
 
-            unrealized_pnl = float(position.unrealized_pnl)
+                cs_1m = await grid_trading.candle_stick(market_id=0, resolution="1m")
+                trading_state.candle_stick_1m = cs_1m
 
-            # 检查当前账户保证金
-            trading_state.current_collateral = float(account_info.collateral)
+                # 急跌判断
+                is_jidie, jidie_details = await grid_trading.is_jidie(cs_1m)
+                if is_jidie:
+                    logger.info(f"⚠️ 警告：当前急跌中, {jidie_details}")
+                    min_step = trading_state.base_grid_single_price
+                    max_step = (
+                        trading_state.base_grid_single_price * 30
+                    )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
 
-            unrealized_collateral = trading_state.current_collateral + unrealized_pnl
-            pnl = unrealized_collateral - trading_state.start_collateral
-            logger.info(
-                f"💰盈亏情况: 初始: {trading_state.start_collateral}, 当前: {unrealized_collateral}, 盈亏: {round(pnl,6)}"
-            )
-            logger.info(
-                f"⏱️ 运行时间: {round(time.time() - trading_state.start_time)} 秒, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
-            )
+                    raw_step = 0.8 * round(jidie_details.get("atr"), 2)
+                    trading_state.active_grid_signle_price = max(
+                        min_step, min(raw_step, max_step)
+                    )
+                else:
+                    trading_state.active_grid_signle_price = (
+                        trading_state.base_grid_single_price
+                    )
 
-            # get_current_grid_status()
+                # 每60秒执行一次（10秒 * 6 = 60秒）
+                if counter % 6 == 0:
+                    cs_5m = await grid_trading.candle_stick(
+                        market_id=0, resolution="5m"
+                    )
+                    is_yindie, yindie_details = await grid_trading.is_yindie(cs_5m)
+                    if is_yindie:
+                        logger.info(f"⚠️ 警告：当前阴跌中, {yindie_details}")
+                        trading_state.grid_pause = True
+                    else:
+                        if abs(float(position_size)) < GRID_CONFIG["MAX_POSITION"]:
+                            trading_state.grid_pause = False
+
+                counter += 1
+            except Exception:
+                logger.exception("执行循环检查时出现异常")
 
     except KeyboardInterrupt:
         logger.info("👋 收到停止信号")
-    except Exception as e:
-        logger.error(f"网格交易运行时发生错误: {e}")
+    except Exception:
+        logger.exception(f"网格交易运行时发生错误")
     finally:
         trading_state.is_running = False
         await signer_client.close()

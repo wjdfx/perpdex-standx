@@ -15,7 +15,7 @@ from common.config import (
     ACCOUNT_INDEX,
     API_KEY_INDEX,
 )
-from grid_matin import GridTrading
+from .grid_matin import GridTrading
 
 
 async def main():
@@ -47,9 +47,21 @@ async def main():
         market_id=0,
     )
     
-    orders = await grid_trading.get_orders_by_rest()
-    for order in orders:
-        logger.info(f"Order: {order}")
+    # orders = await grid_trading.get_orders_by_rest()
+    # for order in orders:
+    #     logger.info(f"Order: {order}")
+    
+    counter = 0
+    while True:
+        df = await grid_trading.candle_stick(market_id=0, resolution="1m")
+        # 每10秒执行一次
+        await grid_trading.is_jidie(df)
+        # 每60秒执行一次（10秒 * 6 = 60秒）
+        if counter % 6 == 0:
+            df = await grid_trading.candle_stick(market_id=0, resolution="5m")
+            await grid_trading.is_yindie(df)
+        counter += 1
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())

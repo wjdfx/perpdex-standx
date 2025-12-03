@@ -3,7 +3,8 @@ import logging
 import time
 import lighter
 import pandas as pd
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
+from . import quota
 from .ws_client import UnifiedWebSocketClient
 from common.config import BASE_URL
 from lighter.signer_client import CODE_OK
@@ -349,44 +350,160 @@ class GridTrading:
             return None
         finally:
             await api_client.close()
-            
-async def candle_stick(
-    candle_api: lighter.CandlestickApi,
-    market_id: int,
-) -> pd.DataFrame:
-    start_time = int(time.time()) - 3600 * 10  # 10小时前
-    end_time = int(time.time())
-    count_back = 30
-    resolution = "1m"
 
-    resp = await candle_api.candlesticks(
-        market_id=market_id,
-        start_timestamp=start_time,
-        end_timestamp=end_time,
-        count_back=count_back,
-        resolution=resolution,
-    )
-    if resp.code != CODE_OK:
-        print(f"获取K线数据失败: {resp.message}")
-        return None
+    @staticmethod
+    def _resolution_to_seconds(resolution: str) -> int:
+        mapping = {
+            "1m": 60,
+            "3m": 180,
+            "5m": 300,
+            "15m": 900,
+            "30m": 1800,
+            "1h": 3600,
+            "4h": 14400,
+            "1d": 86400,
+        }
+        if resolution not in mapping:
+            raise ValueError(f"Unsupported resolution: {resolution}")
+        return mapping[resolution]
+    
+    async def candle_stick(
+        self,
+        market_id: int,
+        resolution: str = "1m",
+        count_back: int = 200,
+    ) -> pd.DataFrame:
+        """
+        通过REST API获取K线数据
 
-    # 将K线数据转换为DataFrame
-    candle_data = []
-    for candle in resp.candlesticks:
-        candle_data.append(
-            {
-                "time": candle.timestamp,
-                "open": candle.open,
-                "high": candle.high,
-                "low": candle.low,
-                "close": candle.close,
-                "volume": candle.volume0,
-            }
+        Returns:
+            订单列表或None（如果获取失败）
+        """
+        
+        resolution_seconds = self._resolution_to_seconds(resolution)
+        end_time = int(time.time())
+        start_time = end_time - resolution_seconds * count_back
+        
+        configuration = lighter.Configuration(BASE_URL)
+        api_client = lighter.ApiClient(configuration)
+        candle_api = lighter.CandlestickApi(api_client)
+        
+        try:
+            resp = await candle_api.candlesticks(
+                market_id=market_id,
+                start_timestamp=start_time,
+                end_timestamp=end_time,
+                count_back=count_back,
+                resolution=resolution,
+            )
+            if resp.code != CODE_OK:
+                print(f"获取K线数据失败: {resp.message}")
+                return None
+
+            # 将K线数据转换为DataFrame
+            candle_data = []
+            for candle in resp.candlesticks:
+                candle_data.append(
+                    {
+                        "time": candle.timestamp,
+                        "open": candle.open,
+                        "high": candle.high,
+                        "low": candle.low,
+                        "close": candle.close,
+                        "volume": candle.volume0,
+                    }
+                )
+
+            df = pd.DataFrame(candle_data)
+
+            # 将时间戳转换为可读格式（毫秒值）
+            df["time"] = pd.to_datetime(df["time"], unit="ms")
+        except Exception as e:
+            logger.error(f"通过REST请求K线数据时发生错误: {e}")
+            return None
+        finally:
+            await api_client.close()
+
+        return df
+
+    async def is_yindie(
+        self,
+        df: pd.DataFrame,
+        ema_period: int = 20,
+        adx_period: int = 14,
+        rsi_period: int = 14,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        if df is None or len(df) < max(ema_period, adx_period, rsi_period):
+            logger.warning("阴跌检测数据不足")
+            return False, {"reason": "insufficient_data"}
+
+        ema_series = quota.compute_ema(df, period=ema_period)
+        rsi_series = quota.compute_rsi(df, period=rsi_period)
+        adx_series, pdi_series, mdi_series = quota.compute_adx(df, period=adx_period)
+
+        ema_value = float(ema_series.iloc[-1])
+        rsi_value = float(rsi_series.iloc[-1])
+        adx_value = float(adx_series.iloc[-1])
+        pdi_value = float(pdi_series.iloc[-1])
+        mdi_value = float(mdi_series.iloc[-1])
+        close_value = float(df["close"].iloc[-1])
+
+        is_downtrend = close_value < ema_value
+        has_trend = adx_value > 25 and pdi_value < mdi_value
+        weak_rsi = rsi_value < 50
+
+        result = is_downtrend and has_trend and weak_rsi
+        details = {
+            "close": close_value,
+            "ema": ema_value,
+            "adx": adx_value,
+            "pdi": pdi_value,
+            "mdi": mdi_value,
+            "rsi": rsi_value,
+        }
+        logger.info("阴跌检测: %s", details | {"result": result})
+        return result, details
+
+    async def is_jidie(
+        self,
+        df: pd.DataFrame,
+        close: Optional[float] = None,
+        atr_period: int = 14,
+        atr_ma_period: int = 60,
+        fall_threshold: float = 15.0,
+        atr_multiplier_threshold: float = 3.0,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        if df is None or len(df) < max(atr_period, atr_ma_period):
+            logger.warning("急跌检测数据不足")
+            return False, {"reason": "insufficient_data"}
+
+        atr_series = quota.compute_atr(df, period=atr_period)
+        atr_ma_series = atr_series.rolling(window=atr_ma_period).mean()
+
+        atr_value = float(atr_series.iloc[-1])
+        atr_ma_value = float(atr_ma_series.iloc[-1]) if not pd.isna(atr_ma_series.iloc[-1]) else 0.0
+        atr_multiplier = atr_value / atr_ma_value if atr_ma_value else float("inf")
+
+        latest_open = float(df["open"].iloc[-1])
+        latest_close = float(df["close"].iloc[-1])
+        if close is not None:
+            latest_close = close
+        fall_amount = latest_open - latest_close
+
+        fall_condition = fall_amount > fall_threshold
+        atr_condition = (
+            atr_ma_value > 0
+            and atr_value > atr_multiplier_threshold * atr_ma_value
         )
+        result = fall_condition or atr_condition
 
-    df = pd.DataFrame(candle_data)
-
-    # 将时间戳转换为可读格式（毫秒值）
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
-
-    return df
+        details = {
+            "open": latest_open,
+            "close": latest_close,
+            "fall_amount": fall_amount,
+            "atr": atr_value,
+            "atr_ma": atr_ma_value,
+            "atr_multiplier": atr_multiplier,
+        }
+        # logger.info("急跌检测: %s", details | {"result": result})
+        return result, details
