@@ -1061,19 +1061,19 @@ async def run_grid_trading():
                 is_jidie, jidie_details = await grid_trading.is_jidie(cs_1m)
                 if is_jidie:
                     logger.info(f"⚠️ 警告：当前急跌中, {jidie_details}")
-                    min_step = trading_state.base_grid_single_price
-                    max_step = (
-                        trading_state.base_grid_single_price * 30
-                    )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
+                #     min_step = trading_state.base_grid_single_price
+                #     max_step = (
+                #         trading_state.base_grid_single_price * 30
+                #     )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
 
-                    raw_step = 0.8 * round(jidie_details.get("atr"), 2)
-                    trading_state.active_grid_signle_price = max(
-                        min_step, min(raw_step, max_step)
-                    )
-                else:
-                    trading_state.active_grid_signle_price = (
-                        trading_state.base_grid_single_price
-                    )
+                #     raw_step = 0.8 * round(jidie_details.get("atr"), 2)
+                #     trading_state.active_grid_signle_price = max(
+                #         min_step, min(raw_step, max_step)
+                #     )
+                # else:
+                #     trading_state.active_grid_signle_price = (
+                #         trading_state.base_grid_single_price
+                #     )
                     
                 # 波动检测
                 atr_value = jidie_details.get("atr")
