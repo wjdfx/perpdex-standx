@@ -35,7 +35,7 @@ GRID_CONFIG = {
     "DECREASE_POSITION": 0.4,  # 降低仓位触发点
     "ALER_POSITION": 0.2,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
-    "ATR_THRESHOLD": 3,  # ATR波动阈值
+    "ATR_THRESHOLD": 5,  # ATR波动阈值
 }
 
 

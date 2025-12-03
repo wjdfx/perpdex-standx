@@ -468,7 +468,7 @@ class GridTrading:
         self,
         df: pd.DataFrame,
         close: Optional[float] = None,
-        atr_period: int = 14,
+        atr_period: int = 7,
         atr_ma_period: int = 60,
         fall_threshold: float = 15.0,
         atr_multiplier_threshold: float = 3.0,
@@ -511,7 +511,7 @@ class GridTrading:
     async def current_atr(
         self,
         df: pd.DataFrame,
-        atr_period: int = 14,
+        atr_period: int = 7,
     ) -> Optional[float]:
         if df is None or len(df) < atr_period:
             logger.warning("ATR计算数据不足")
