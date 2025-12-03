@@ -579,6 +579,7 @@ async def replenish_grid(filled_signal: bool):
             while (
                 trading_state.current_price - high_buy_price
                 > trading_state.active_grid_signle_price * 1.5
+                and len(trading_state.buy_prices) < GRID_CONFIG["MAX_TOTAL_ORDERS"]
             ):
                 # 补充买单
                 if trading_state.grid_buy_spread_alert:
