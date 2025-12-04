@@ -630,6 +630,11 @@ async def _buy_side_replenish_sell_order():
     new_sell_price = round(high_buy_price + trading_state.active_grid_signle_price * 2, 2)
     if len(trading_state.sell_orders) > 0:
         new_sell_price = min(trading_state.sell_orders.values()) - trading_state.active_grid_signle_price
+    
+    # 补单价格离当前价格过远，调整为最高买单价格上方2倍单网格价差
+    if new_sell_price - trading_state.current_price > trading_state.active_grid_signle_price * 2:
+        new_sell_price = round(high_buy_price + trading_state.active_grid_signle_price * 2, 2)
+        
     # 当前价格超过新补单价格时，不补单
     if trading_state.current_price < new_sell_price:
         # 执行订单补充
