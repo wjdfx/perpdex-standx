@@ -35,7 +35,7 @@ GRID_CONFIG = {
     "DECREASE_POSITION": 0.4,  # 降低仓位触发点
     "ALER_POSITION": 0.2,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
-    "ATR_THRESHOLD": 8,  # ATR波动阈值
+    "ATR_THRESHOLD": 7,  # ATR波动阈值
 }
 
 
@@ -269,9 +269,9 @@ def check_position_limits(positions: dict):
             return
         # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
         if position_size >= alert_pos and position_size < decrease_position:
-            logger.warning(
-                f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
-            )
+            # logger.warning(
+            #     f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
+            # )
             if sign > 0:
                 # 多头仓位
                 trading_state.grid_buy_spread_alert = True
@@ -1051,7 +1051,7 @@ async def run_grid_trading():
                     f"💰盈亏情况: 初始: {round(trading_state.start_collateral, 6)}, 当前: {round(unrealized_collateral, 6)}, 盈亏: {round(pnl,6)}, 网格间距: {round(trading_state.active_grid_signle_price, 2)}"
                 )
                 logger.info(
-                    f"⏱️ 运行时间: {round(time.time() - trading_state.start_time)} 秒, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
+                    f"⏱️ 运行时间: {seconds_formatter(time.time() - trading_state.start_time)}, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
                 )
 
                 cs_1m = await grid_trading.candle_stick(market_id=0, resolution="1m")
@@ -1066,7 +1066,7 @@ async def run_grid_trading():
                 #         trading_state.base_grid_single_price * 30
                 #     )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
 
-                #     raw_step = 0.8 * round(jidie_details.get("atr"), 2)
+                #     raw_step = 0.7 * round(jidie_details.get("atr"), 2)
                 #     trading_state.active_grid_signle_price = max(
                 #         min_step, min(raw_step, max_step)
                 #     )
@@ -1084,7 +1084,7 @@ async def run_grid_trading():
                         trading_state.base_grid_single_price * 30
                     )  # 即使天塌下来，间距也不能超过（防止ATR计算出错导致不挂单）
 
-                    raw_step = 0.8 * round(atr_value, 2)
+                    raw_step = 0.7 * round(atr_value, 2)
                     trading_state.active_grid_signle_price = max(
                         min_step, min(raw_step, max_step)
                     )
@@ -1129,6 +1129,16 @@ async def run_grid_trading():
                 ws_task.cancel()
                 await ws_task
         logger.info("🔚 网格交易系统已停止")
+        
+
+async def seconds_formatter(seconds: int) -> str:
+    """
+    将秒数格式化为 天 时 分 秒
+    """
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{days}天 {hours}小时 {minutes}分钟 {seconds}秒"
 
 
 if __name__ == "__main__":
