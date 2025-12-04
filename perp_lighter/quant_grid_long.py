@@ -1098,7 +1098,7 @@ async def run_grid_trading():
                 if counter % 6 == 0:
                     logger.info("急跌检测: %s", jidie_details | {"result": is_jidie})
                     cs_5m = await grid_trading.candle_stick(
-                        market_id=0, resolution="15m"
+                        market_id=0, resolution="5m"
                     )
                     is_yindie, yindie_details = await grid_trading.is_yindie(cs_5m)
                     logger.info("阴跌检测: %s", yindie_details | {"result": is_yindie})
