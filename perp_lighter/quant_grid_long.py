@@ -1050,8 +1050,9 @@ async def run_grid_trading():
                 logger.info(
                     f"💰盈亏情况: 初始: {round(trading_state.start_collateral, 6)}, 当前: {round(unrealized_collateral, 6)}, 盈亏: {round(pnl,6)}, 网格间距: {round(trading_state.active_grid_signle_price, 2)}"
                 )
+                time_formatted = await seconds_formatter(time.time() - trading_state.start_time)
                 logger.info(
-                    f"⏱️ 运行时间: {seconds_formatter(time.time() - trading_state.start_time)}, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
+                    f"⏱️ 运行时间: {time_formatted}, 开仓价格: {trading_state.open_price}, 当前价格: {trading_state.current_price}, 成交次数: {trading_state.filled_count}"
                 )
 
                 cs_1m = await grid_trading.candle_stick(market_id=0, resolution="1m")
