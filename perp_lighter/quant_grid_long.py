@@ -1139,7 +1139,7 @@ async def seconds_formatter(seconds: int) -> str:
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
-    return f"{days}天 {hours}小时 {minutes}分钟 {seconds}秒"
+    return f"{round(days, 0)}天 {round(hours, 0)}小时 {round(minutes, 0)}分钟 {round(seconds, 0)}秒"
 
 
 if __name__ == "__main__":
