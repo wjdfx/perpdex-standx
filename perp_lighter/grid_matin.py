@@ -520,3 +520,55 @@ class GridTrading:
         atr_series = quota.compute_atr(df, period=atr_period)
         atr_value = float(atr_series.iloc[-1])
         return atr_value
+    
+    async def ema_mean_reversion_filter(
+        self,
+        df: pd.DataFrame,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        EMA乖离率熔断过滤器
+        
+        计算乖离率：Distance = (Price - 15m_EMA60) / 15m_EMA60
+        如果 Distance > 0.02 (偏离2%)：返回True，表示触发熔断
+        
+        Args:
+            df: K线数据DataFrame，包含close列
+            
+        Returns:
+            Tuple[bool, Dict[str, Any]]: (是否触发熔断, 指标数据)
+        """
+        if df is None or len(df) < 60:
+            logger.warning("EMA乖离率熔断检测数据不足")
+            return False, {"reason": "insufficient_data"}
+        
+        try:
+            # 计算15分钟EMA60
+            ema_60 = quota.compute_ema(df, period=60, column="close")
+            ema_value = float(ema_60.iloc[-1])
+            
+            # 获取当前价格（最新收盘价）
+            current_price = float(df["close"].iloc[-1])
+            
+            # 计算乖离率
+            distance = (current_price - ema_value) / ema_value
+            
+            # 判断是否触发熔断（偏离超过2%）
+            is_triggered = distance > 0.02
+            
+            # 构建指标数据
+            metrics = {
+                "current_price": current_price,
+                "ema_60": ema_value,
+                "distance": distance,
+                "threshold": 0.02,
+                "is_triggered": is_triggered
+            }
+            
+            logger.info(f"EMA乖离率熔断检测: 价格={current_price:.2f}, EMA60={ema_value:.2f}, "
+                       f"乖离率={distance:.4f}, 阈值=0.02, 触发={is_triggered}")
+            
+            return is_triggered, metrics
+            
+        except Exception as e:
+            logger.error(f"EMA乖离率熔断检测时发生错误: {e}")
+            return False, {"reason": f"calculation_error: {str(e)}"}

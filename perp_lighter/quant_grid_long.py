@@ -1108,6 +1108,13 @@ async def run_grid_trading():
                     else:
                         if abs(float(position_size)) < GRID_CONFIG["MAX_POSITION"]:
                             trading_state.grid_pause = False
+                            
+                    cs_15m = await grid_trading.candle_stick(
+                        market_id=0, resolution="15m"
+                    )
+                    is_ema_filter, ema_filter_details = await grid_trading.ema_mean_reversion_filter(cs_15m)
+                    logger.info("EMA均值回归检测: %s", ema_filter_details | {"result": is_ema_filter})
+                    
 
                 counter += 1
             except Exception:
