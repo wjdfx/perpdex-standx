@@ -559,13 +559,12 @@ class GridTrading:
             metrics = {
                 "current_price": current_price,
                 "ema_60": ema_value,
-                "distance": distance,
+                "distance": round(distance, 6),
                 "threshold": 0.02,
-                "is_triggered": is_triggered
             }
             
-            logger.info(f"EMA乖离率熔断检测: 价格={current_price:.2f}, EMA60={ema_value:.2f}, "
-                       f"乖离率={distance:.4f}, 阈值=0.02, 触发={is_triggered}")
+            # logger.info(f"EMA乖离率熔断检测: 价格={current_price:.2f}, EMA60={ema_value:.2f}, "
+            #            f"乖离率={distance:.4f}, 阈值=0.02, 触发={is_triggered}")
             
             return is_triggered, metrics
             

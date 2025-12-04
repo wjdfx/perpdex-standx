@@ -1102,18 +1102,24 @@ async def run_grid_trading():
                     )
                     is_yindie, yindie_details = await grid_trading.is_yindie(cs_5m)
                     logger.info("阴跌检测: %s", yindie_details | {"result": is_yindie})
-                    if is_yindie:
-                        logger.info(f"⚠️ 警告：当前阴跌中, {yindie_details}")
-                        trading_state.grid_pause = True
-                    else:
-                        if abs(float(position_size)) < GRID_CONFIG["MAX_POSITION"]:
-                            trading_state.grid_pause = False
-                            
+                    
                     cs_15m = await grid_trading.candle_stick(
                         market_id=0, resolution="15m"
                     )
                     is_ema_filter, ema_filter_details = await grid_trading.ema_mean_reversion_filter(cs_15m)
                     logger.info("EMA均值回归检测: %s", ema_filter_details | {"result": is_ema_filter})
+                    
+                    if is_yindie or is_ema_filter:
+                        trading_state.grid_pause = True
+                        if is_yindie:
+                            logger.info(f"⚠️ 警告：当前阴跌中,暂停交易, {yindie_details}")
+                        if is_ema_filter:
+                            logger.info(f"⚠️ 警告：当前EMA均值回归趋势不利,暂停交易, {ema_filter_details}")
+                    else:
+                        if abs(float(position_size)) < GRID_CONFIG["MAX_POSITION"]:
+                            trading_state.grid_pause = False
+                            
+                    
                     
 
                 counter += 1
