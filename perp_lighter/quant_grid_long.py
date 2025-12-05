@@ -286,9 +286,9 @@ def check_position_limits(positions: dict):
             # ) * 2
             trading_state.grid_decrease_status = False
         elif position_size >= decrease_position:
-            logger.warning(
-                f"⚠️ 警告：仓位超出降低点，开始降低仓位: 市场={market_id}, 当前={position_size}, 降低点={decrease_position}"
-            )
+            # logger.warning(
+            #     f"⚠️ 警告：仓位超出降低点，开始降低仓位: 市场={market_id}, 当前={position_size}, 降低点={decrease_position}"
+            # )
             trading_state.grid_decrease_status = True
         else:
             trading_state.grid_buy_spread_alert = False
@@ -1133,21 +1133,26 @@ async def run_grid_trading():
                 if counter % 6 == 0:
                     logger.info("急跌检测: %s", jidie_details | {"result": is_jidie})
                     cs_5m = await grid_trading.candle_stick(
-                        market_id=0, resolution="5m"
+                        market_id=GRID_CONFIG["MARKET_ID"], resolution="5m"
                     )
-                    is_yindie, yindie_details = await grid_trading.is_yindie(cs_5m)
-                    logger.info("阴跌检测: %s", yindie_details | {"result": is_yindie})
+                    is_yindie_5m, yindie_details_5m = await grid_trading.is_yindie(cs_5m)
+                    logger.info("5分钟阴跌检测: %s", yindie_details_5m | {"result": is_yindie_5m})
                     
                     cs_15m = await grid_trading.candle_stick(
-                        market_id=0, resolution="15m"
+                        market_id=GRID_CONFIG["MARKET_ID"], resolution="15m"
                     )
+                    is_yindie_15m, yindie_details_15m = await grid_trading.is_yindie(cs_15m)
+                    logger.info("15分钟阴跌检测: %s", yindie_details_15m | {"result": is_yindie_15m})
+                    
                     is_ema_filter, ema_filter_details = await grid_trading.ema_mean_reversion_filter(cs_15m)
                     logger.info("EMA均值回归检测: %s", ema_filter_details | {"result": is_ema_filter})
                     
-                    if is_yindie or is_ema_filter:
+                    if is_yindie_5m or is_yindie_15m or is_ema_filter:
                         trading_state.grid_pause = True
-                        if is_yindie:
-                            logger.info(f"⚠️ 警告：当前阴跌中,暂停交易, {yindie_details}")
+                        if is_yindie_5m:
+                            logger.info(f"⚠️ 警告：当前5分钟线阴跌中,暂停交易, {yindie_details_5m}")
+                        if is_yindie_15m:
+                            logger.info(f"⚠️ 警告：当前15分钟线阴跌中,暂停交易, {yindie_details_15m}")
                         if is_ema_filter:
                             logger.info(f"⚠️ 警告：当前EMA均值回归趋势不利,暂停交易, {ema_filter_details}")
                     else:
