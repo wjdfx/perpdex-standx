@@ -628,10 +628,6 @@ async def _over_range_replenish_buy_order(high_buy_price: float):
             logger.info("当前成交订单为买单，不补充买单")
             return
         
-        if len(trading_state.buy_orders) == 0 and len(trading_state.sell_orders) > 0:
-            # 暂停后恢复补单，等待卖单吃单后再补买单
-            return
-        
         new_buy_price = round(
             high_buy_price + trading_state.active_grid_signle_price, 2
         )
