@@ -1153,6 +1153,8 @@ async def _risk_check(start: bool = False):
         if trading_state.current_position_size < GRID_CONFIG["MAX_POSITION"]:
             # 解除熔断
             trading_state.grid_pause = False
+            trading_state.pause_position_exist = False
+            logger.info("✅ 当前风控检查通过，恢复网格交易")
                     
 async def _save_pause_position():
     """
