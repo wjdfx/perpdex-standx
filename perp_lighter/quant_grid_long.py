@@ -828,10 +828,10 @@ async def check_current_orders():
             logger.info("交易暂停，取消所有买单")
             await _cancel_orders(cancel_orders)
                 
-        if len(trading_state.sell_orders) > 0:
-            cancel_orders = list(trading_state.sell_orders.keys())
-            logger.info("交易暂停，取消所有卖单")
-            await _cancel_orders(cancel_orders)
+        # if len(trading_state.sell_orders) > 0:
+        #     cancel_orders = list(trading_state.sell_orders.keys())
+        #     logger.info("交易暂停，取消所有卖单")
+        #     await _cancel_orders(cancel_orders)
 
     # 检查重复订单
     if len(trading_state.sell_orders) > 0:
