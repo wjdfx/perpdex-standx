@@ -258,6 +258,65 @@ class GridTrading:
             return False, None
         finally:
             await api_client.close()
+            
+    async def place_reduce_order(self, is_ask: bool, amount: float) -> Tuple[bool, Optional[int]]:
+        """
+        放置市价单
+
+        Args:
+            is_ask: 是否为卖单
+            amount: 数量
+
+        Returns:
+            Tuple[bool, Optional[int]]: (是否成功放置订单, 订单ID)
+        """
+        configuration = lighter.Configuration(BASE_URL)
+        api_client = lighter.ApiClient(configuration)
+        transaction_api = lighter.TransactionApi(api_client)
+        
+        try:
+            # 获取nonce
+            next_nonce = await transaction_api.next_nonce(
+                account_index=self.account_index, api_key_index=self.api_key_index
+            )
+            nonce_value = next_nonce.nonce
+
+            # 签名市价单
+            order_id = int(time.time() * 1000) % 1000000
+            tx_type, tx_info, error = self.signer_client.sign_create_order(
+                market_index=self.market_id,
+                client_order_index=order_id,
+                base_amount=int(amount * self.base_amount_multiplier),
+                price=0,  # 市价单价格设为0
+                is_ask=is_ask,
+                order_type=self.signer_client.ORDER_TYPE_MARKET,
+                time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
+                reduce_only=True,
+                trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
+                nonce=nonce_value,
+            )
+
+            if error is not None:
+                logger.error(f"签名市价单失败 (数量={amount}): {error}")
+                return False, None
+
+            # 发送交易
+            success = await self.ws_client.send_single_tx_async(
+                tx_type, tx_info
+            )
+
+            if success:
+                # logger.info(f"成功放置市价单: {'卖单' if is_ask else '买单'} 数量={amount}, 订单ID={order_id}")
+                return True, order_id
+            else:
+                logger.error("发送市价单失败")
+                return False, None
+
+        except Exception as e:
+            logger.error(f"放置市价单时发生错误: {e}")
+            return False, None
+        finally:
+            await api_client.close()
 
     async def cancel_grid_orders(self, order_ids: List[int]) -> bool:
         """
@@ -347,6 +406,43 @@ class GridTrading:
                
         except Exception as e:
             logger.error(f"通过REST检查当前订单时发生错误: {e}")
+            return None
+        finally:
+            await api_client.close()
+            
+    async def get_trades_by_rest(self, ask_filter: int, limit: int) -> List[lighter.Trade]:
+        """
+        通过REST API获取当前账户的所有成交记录
+
+        Returns:
+            成交记录列表或None（如果获取失败）
+        """
+        
+        configuration = lighter.Configuration(BASE_URL)
+        api_client = lighter.ApiClient(configuration)
+        order_api = lighter.OrderApi(api_client)
+        
+        try:
+            expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
+            auth, err = self.signer_client.create_auth_token_with_expiry(
+                deadline=expiry
+            )
+            if err is not None:
+                logger.error(f"创建认证令牌失败: {auth}")
+                return
+            
+            trades = await order_api.trades(
+                account_index=self.account_index,
+                market_id=self.market_id,
+                auth=auth,
+                sort_by="timestamp",
+                ask_filter=ask_filter,
+                limit=limit,
+            )
+            return trades.trades
+               
+        except Exception as e:
+            logger.error(f"通过REST检查当前成交记录时发生错误: {e}")
             return None
         finally:
             await api_client.close()
