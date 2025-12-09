@@ -1135,7 +1135,6 @@ async def _risk_check(start: bool = False):
         else:
             if not trading_state.pause_position_exist:
                 await _save_pause_position()
-                trading_state.pause_position_exist = True
         # 记录熔断时仓位
         if is_yindie_5m:
             logger.info(
@@ -1174,6 +1173,7 @@ async def _save_pause_position():
             amount=trading_state.available_position_size,
         )
         if success:
+            trading_state.pause_position_exist = True
             logger.info(
                 f"占位订单创建成功: 价格={order_price}, 订单ID={order_id}"
             )
