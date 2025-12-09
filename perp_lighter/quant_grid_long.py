@@ -73,7 +73,7 @@ class GridTradingState:
         self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
         self.current_atr: float = 0.0  # 当前ATR值
         self.grid_profit: float = 0.0  # 网格净收益(部分收益会用来减仓)
-        self.pause_positions: dict[float, float] = {}  # 熔断时的仓位映射
+        self.pause_positions: dict[float, float] = {}  # 熔断时的仓位映射, 价格->仓位
         self.pause_position_exist: bool = False  # 记录本次是否已经进行了熔断占位仓位下单
         self.available_position_size: float = 0.0  # 可用仓位
         self.active_profit: float = 0.0  # 动态网格收益
@@ -151,21 +151,25 @@ async def on_account_all_positions_update(account_id: str, positions: dict):
 #######################################################
 async def _cal_position_highest_order_price() -> float:
     """
-    计算当前仓位最高一单的价格: 当前价格+(基础间距x仓位)
+    如果当前存在占位订单，则直接使用占位订单进行计算；
+    如果没有占位订单，则按照当前最后的成交价格，加上仓位计算最高距离的订单价格
     """
     global trading_state
 
-    highest_price = (
-        trading_state.current_price
-        + trading_state.base_grid_single_price * trading_state.available_position_size
-    )
-    return highest_price
+    target_price = trading_state.last_trade_price + trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.base_grid_single_price
+    if len(trading_state.pause_positions):
+        target_price = max(trading_state.pause_positions.keys())
+        
+    return round(target_price, 6)
 
 
 async def _highest_order_lost() -> float:
     """
-    计算当前仓位最高一单距离当前价格浮亏多少
+    如果当前存在占位订单，则直接使用占位订单进行计算；
+    如果没有占位订单，则按照当前最后的成交价格，加上仓位计算最高距离的订单价格
     """
+    global trading_state
+    
     higest_price = _cal_position_highest_order_price()
     return (higest_price - trading_state.current_price) * GRID_CONFIG["GRID_AMOUNT"]
 
@@ -613,7 +617,7 @@ async def _over_range_replenish_buy_order(high_buy_price: float):
     if len(trading_state.buy_prices) < GRID_CONFIG["MAX_TOTAL_ORDERS"]:
         if (
             not trading_state.last_filled_order_is_ask
-            and len(trading_state.sell_orders) > 0
+            and len(trading_state.buy_orders) > 0
         ):
             # 如果上次成交订单是买单，则不补充买单
             logger.info("当前成交订单为买单，不补充买单")
