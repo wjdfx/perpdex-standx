@@ -31,7 +31,7 @@ class UnifiedWebSocketClient:
         on_account_all_positions_update=None,
         on_generic_message_update=None,
         auto_reconnect=True,
-        max_reconnect_attempts=5,
+        max_reconnect_attempts=100,
         initial_reconnect_delay=1,
         max_reconnect_delay=30,
     ):
@@ -813,7 +813,7 @@ class UnifiedWebSocketClient:
             # logger.info(f"Sent single transaction of type {tx_type}")
             return True
         except Exception as e:
-            logger.error(f"Error sending single transaction: {e}")
+            logger.exception(f"Error sending single transaction: {e}")
             return False
 
     async def send_single_tx_async(self, tx_type, tx_info):
@@ -843,8 +843,66 @@ class UnifiedWebSocketClient:
             # logger.info(f"Sent single transaction of type {tx_type}")
             return True
         except Exception as e:
-            logger.error(f"Error sending single transaction: {e}")
+            logger.exception(f"Error sending single transaction: {e}")
+            # 如果发送失败且启用了自动重连，尝试重连
+            if self.auto_reconnect and self.reconnect_attempts < self.max_reconnect_attempts:
+                logger.warning("发送交易失败，尝试重连...")
+                await self._reconnect_async()
             return False
+
+    async def _reconnect_async(self):
+        """
+        异步重连逻辑
+        """
+        if self.is_reconnecting:
+            return
+
+        try:
+            self.is_reconnecting = True
+            self.reconnect_attempts += 1
+            delay = self._calculate_reconnect_delay()
+            logger.info(f"准备重连 ({self.reconnect_attempts}/{self.max_reconnect_attempts})，{delay}秒后开始...")
+
+            await asyncio.sleep(delay)
+
+            self.ws = await connect_async(self.base_url)
+            # 重连成功后，服务器会发送 "connected" 消息，handle_connected_async 会处理订阅
+            # 创建认证令牌
+            from lighter import SignerClient
+            from common.config import (
+                BASE_URL,
+                API_KEY_PRIVATE_KEY,
+                ACCOUNT_INDEX,
+                API_KEY_INDEX,
+            )
+            signer_client = SignerClient(
+                url=BASE_URL,
+                private_key=API_KEY_PRIVATE_KEY,
+                account_index=ACCOUNT_INDEX,
+                api_key_index=API_KEY_INDEX,
+            )
+            expiry = int(time.time()) + 10 * SignerClient.MINUTE
+            auth, err = signer_client.create_auth_token_with_expiry(
+                deadline=expiry
+            )
+            if err is not None:
+                logger.error(f"创建认证令牌失败: {auth}")
+                return
+            self.auth_token = auth
+            
+            # 重连成功，重置重连计数器
+            if self.reconnect_attempts > 0:
+                logger.info("重连成功！")
+                self.reconnect_attempts = 0
+                self.is_reconnecting = False
+        except Exception as e:
+            logger.error("重连失败")
+            if self.reconnect_attempts >= self.max_reconnect_attempts:
+                logger.error(f"已达到最大重连次数 ({self.max_reconnect_attempts})，停止重连")
+                self.is_reconnecting = False
+            else:
+                # 继续重连
+                await self._reconnect_async()
 
     def get_market_stats(self, market_id=None):
         """

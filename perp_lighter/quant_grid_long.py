@@ -170,7 +170,7 @@ async def _highest_order_lost() -> float:
     return (higest_price - trading_state.current_price) * GRID_CONFIG["GRID_AMOUNT"]
 
 
-async def _decrease_position():
+async def _reduce_position():
     """
     降低仓位的逻辑
     """
@@ -828,10 +828,10 @@ async def check_current_orders():
             logger.info("交易暂停，取消所有买单")
             await _cancel_orders(cancel_orders)
                 
-        # if len(trading_state.sell_orders) > 0:
-        #     cancel_orders = list(trading_state.sell_orders.keys())
-        #     logger.info("交易暂停，取消所有卖单")
-        #     await _cancel_orders(cancel_orders)
+        if len(trading_state.sell_orders) > 0:
+            cancel_orders = list(trading_state.sell_orders.keys())
+            logger.info("交易暂停，取消所有卖单")
+            await _cancel_orders(cancel_orders)
 
     # 检查重复订单
     if len(trading_state.sell_orders) > 0:
@@ -1154,7 +1154,7 @@ async def _risk_check(start: bool = False):
             # 解除熔断
             trading_state.grid_pause = False
             trading_state.pause_position_exist = False
-            logger.info("✅ 当前风控检查通过，恢复网格交易")
+            # logger.info("✅ 当前风控检查通过，恢复网格交易")
                     
 async def _save_pause_position():
     """
