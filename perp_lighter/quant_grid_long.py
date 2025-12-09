@@ -33,12 +33,10 @@ GRID_CONFIG = {
     "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
     "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
     "MAX_POSITION": 0.8,  # 最大仓位限制
-    "DECREASE_POSITION": 0.4,  # 降低仓位触发点
+    "DECREASE_POSITION": 0.35,  # 降低仓位触发点
     "ALER_POSITION": 0.2,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
     "ATR_THRESHOLD": 7,  # ATR波动阈值
-    "DB_PATH": "data/quant_grid_long.db",  # SQLite数据库路径
-    "DB_TABLE_NAME": "grid_pause_records",  # 熔断记录表
 }
 
 
@@ -72,8 +70,8 @@ class GridTradingState:
         self.filled_count: int = 0  # 成交订单计数
         self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
         self.current_atr: float = 0.0  # 当前ATR值
-        self.grid_profit: float = 0.0  # 网格净收益(部分收益会用来减仓)
         self.pause_positions: dict[float, float] = {}  # 熔断时的仓位映射, 价格->仓位
+        self.pause_orders: dict[str, float] = {}  # 占位订单ID到价格映射
         self.pause_position_exist: bool = False  # 记录本次是否已经进行了熔断占位仓位下单
         self.available_position_size: float = 0.0  # 可用仓位
         self.active_profit: float = 0.0  # 动态网格收益
@@ -165,13 +163,13 @@ async def _cal_position_highest_order_price() -> float:
 
 async def _highest_order_lost() -> float:
     """
-    如果当前存在占位订单，则直接使用占位订单进行计算；
-    如果没有占位订单，则按照当前最后的成交价格，加上仓位计算最高距离的订单价格
+    计算最高价格仓位浮亏
     """
     global trading_state
     
-    higest_price = _cal_position_highest_order_price()
-    return (higest_price - trading_state.current_price) * GRID_CONFIG["GRID_AMOUNT"]
+    target_price = await _cal_position_highest_order_price()
+    lost = (target_price - trading_state.current_price) * GRID_CONFIG["GRID_AMOUNT"]
+    return lost
 
 
 async def _reduce_position():
@@ -182,21 +180,51 @@ async def _reduce_position():
 
     if not trading_state.grid_decrease_status:
         return
+    
+    # 只允许此比例的收益用来减仓，以保留收益
+    REDUCE_MULTIPLIER = 0.7
 
-    highest_lost = _highest_order_lost()
-    if trading_state.grid_profit <= highest_lost:
-        # 当前总收益不够降仓
+    highest_lost = round(await _highest_order_lost(), 6)
+    if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
+        # 当前动态收益不够降仓
+        logger.info(
+            f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+        )
         return
 
-    success, order_id = await trading_state.grid_trading.place_reduce_order(
-        True, GRID_CONFIG["GRID_AMOUNT"]
+    success, order_id = await trading_state.grid_trading.place_single_market_order(
+        is_ask=True, 
+        price=trading_state.current_price,
+        amount=GRID_CONFIG["GRID_AMOUNT"]
     )
     if success:
-        trading_state.grid_profit = trading_state.grid_profit - highest_lost
+        trading_state.active_profit = trading_state.active_profit - highest_lost
         logger.info(
-            f"降低仓位成功，当前价格：{trading_state.current_price}, 当前总收益：{trading_state.grid_profit}"
+            f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
         )
-
+        
+        # 降低占位订单交易数量
+        if len(trading_state.pause_orders) > 0:
+            logger.info(f"占位订单: {trading_state.pause_orders}")
+            pause_orders = dict(
+                sorted(
+                    trading_state.pause_orders.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            )
+            order_id, max_price = list(pause_orders.items())[0]
+            success = await trading_state.grid_trading.modify_grid_order(
+                order_id=order_id,
+                new_price=max_price,
+                new_amount=trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"],
+            )
+            if success:
+                trading_state.pause_positions[max_price] = trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"]
+                logger.info(
+                    f"降低占位订单交易数量成功，订单ID: {order_id}, 新数量: {trading_state.pause_positions[max_price]}"
+                )
+                del trading_state.pause_orders[order_id]
 
 #######################################################
 
@@ -341,9 +369,6 @@ async def check_position_limits(positions: dict):
             # ) * 2
             trading_state.grid_decrease_status = False
         elif position_size >= decrease_position:
-            # logger.warning(
-            #     f"⚠️ 警告：仓位超出降低点，开始降低仓位: 市场={market_id}, 当前={position_size}, 降低点={decrease_position}"
-            # )
             trading_state.grid_decrease_status = True
         else:
             trading_state.grid_buy_spread_alert = False
@@ -965,17 +990,22 @@ async def _sync_current_orders():
     buy_orders = {}
     sell_orders = {}
     trading_state.pause_positions = {}
+    trading_state.pause_orders = {}
     for order in orders:
-        order_id = order.client_order_index
+        order_id = order.order_index
+        if order.client_order_index > 0:
+            order_id = order.client_order_index
         is_ask = order.is_ask
-        price = float(order.price)
+        price = round(float(order.price), 6)
         status = order.status
         initial_base_amount = float(order.initial_base_amount)
+        # logger.info(f"同步订单: ID={order_id}, 方向={'卖单' if is_ask else '买单'}, 价格={price}, 状态={status}, 初始量={initial_base_amount}")
         if status != "open":
             continue
         if initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
             # 非网格订单，记录为熔断占位订单
             trading_state.pause_positions[price] = initial_base_amount
+            trading_state.pause_orders[order_id] = price
             continue
         
         if is_ask:
@@ -1049,9 +1079,10 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         else:
             # 同步订单状态
             await _sync_current_orders()
-            success = await grid_trading.place_grid_orders(
-                1, base_price, grid_count, grid_amount, grid_spread
-            )
+            if not trading_state.grid_pause:
+                success = await grid_trading.place_grid_orders(
+                    1, base_price, grid_count, grid_amount, grid_spread
+                )
 
 
         if success:
@@ -1158,6 +1189,12 @@ async def _risk_check(start: bool = False):
             trading_state.grid_pause = False
             trading_state.pause_position_exist = False
             # logger.info("✅ 当前风控检查通过，恢复网格交易")
+            
+    if trading_state.grid_decrease_status:
+        logger.info(
+            f"⚠️ 警告：仓位超出降低点，开始降低仓位"
+        )
+        await _reduce_position()
                     
 async def _save_pause_position():
     """
@@ -1289,7 +1326,6 @@ async def run_grid_trading():
                     logger.info(f"获取账户信息失败: {account_info_resp.message}")
                     return False, None
                 account_info = account_info_resp.accounts[0]
-
                 position = account_info.positions[0]
                 position_size = position.position
                 trading_state.current_position_size = round(abs(float(position_size)), 2)

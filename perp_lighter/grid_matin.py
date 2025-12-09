@@ -259,7 +259,7 @@ class GridTrading:
         finally:
             await api_client.close()
             
-    async def place_reduce_order(self, is_ask: bool, amount: float) -> Tuple[bool, Optional[int]]:
+    async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, Optional[int]]:
         """
         放置市价单
 
@@ -280,19 +280,27 @@ class GridTrading:
                 account_index=self.account_index, api_key_index=self.api_key_index
             )
             nonce_value = next_nonce.nonce
+            
+            slippage = 0.5  # 滑点百分比
+            
+            # 做空
+            if is_ask:
+                slippage = -slippage
 
+            order_price = round(price * (1 + slippage / 100), 2)
+            
             # 签名市价单
             order_id = int(time.time() * 1000) % 1000000
             tx_type, tx_info, error = self.signer_client.sign_create_order(
                 market_index=self.market_id,
                 client_order_index=order_id,
                 base_amount=int(amount * self.base_amount_multiplier),
-                price=0,  # 市价单价格设为0
+                price=int(order_price * self.price_multiplier),
                 is_ask=is_ask,
                 order_type=self.signer_client.ORDER_TYPE_MARKET,
                 time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
-                reduce_only=True,
                 trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
+                order_expiry=self.signer_client.DEFAULT_IOC_EXPIRY,
                 nonce=nonce_value,
             )
 
@@ -372,6 +380,60 @@ class GridTrading:
                 
         except Exception as e:
             logger.error(f"取消网格订单时发生错误: {e}")
+            return False
+        finally:
+            await api_client.close()
+            
+    async def modify_grid_order(self, order_id: int, new_price: float, new_amount: float) -> bool:
+        """
+        修改网格订单
+
+        Args:
+            order_id: 订单ID
+            new_price: 新价格
+            new_amount: 新数量
+
+        Returns:
+            bool: 是否成功修改订单
+        """
+        
+        configuration = lighter.Configuration(BASE_URL)
+        api_client = lighter.ApiClient(configuration)
+        transaction_api = lighter.TransactionApi(api_client)
+        
+        try:
+            next_nonce = await transaction_api.next_nonce(
+                account_index=self.account_index, api_key_index=self.api_key_index
+            )
+            nonce_value = next_nonce.nonce
+
+            # 签名修改订单
+            tx_type, tx_info, error = self.signer_client.sign_modify_order(
+                market_index=self.market_id,
+                order_index=order_id,
+                price=int(new_price * self.price_multiplier),
+                base_amount=int(new_amount * self.base_amount_multiplier),
+                nonce=nonce_value,
+            )
+
+            if error is not None:
+                logger.error(f"签名修改订单失败 (订单ID={order_id}): {error}")
+                return False
+
+            # 发送交易
+            success = await self.ws_client.send_single_tx_async(
+                tx_type, tx_info
+            )
+
+            if success:
+                # logger.info(f"成功修改订单: 订单ID={order_id}, 新价格={new_price}, 新数量={new_amount}")
+                return True
+            else:
+                logger.error("发送修改订单失败")
+                return False
+
+        except Exception as e:
+            logger.error(f"修改订单时发生错误: {e}")
             return False
         finally:
             await api_client.close()
