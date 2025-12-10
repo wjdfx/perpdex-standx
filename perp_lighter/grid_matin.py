@@ -107,9 +107,7 @@ class GridTrading:
             bool: 是否成功放置所有订单
         """
         
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        transaction_api = lighter.TransactionApi(api_client)
+        transaction_api = lighter.TransactionApi()
             
         try:
             # 生成网格订单
@@ -135,7 +133,7 @@ class GridTrading:
 
             for is_ask, price, amount in orders:
                 # 签名订单
-                tx_type, tx_info, error = self.signer_client.sign_create_order(
+                tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
                     market_index=self.market_id,
                     client_order_index=client_order_index,
                     base_amount=int(amount * self.base_amount_multiplier),
@@ -170,10 +168,8 @@ class GridTrading:
                 return False
 
         except Exception as e:
-            logger.error(f"放置网格订单时发生错误: {e}")
+            logger.exception(f"放置网格订单时发生错误: {e}")
             return False
-        finally:
-            await api_client.close()
 
     def check_position_size(self) -> Optional[float]:
         """
@@ -211,9 +207,7 @@ class GridTrading:
         Returns:
             Tuple[bool, Optional[int]]: (是否成功放置订单, 订单ID)
         """
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        transaction_api = lighter.TransactionApi(api_client)
+        transaction_api = lighter.TransactionApi()
         
         try:
             # 获取nonce
@@ -224,7 +218,7 @@ class GridTrading:
 
             # 签名订单
             order_id = int(time.time() * 1000) % 1000000
-            tx_type, tx_info, error = self.signer_client.sign_create_order(
+            tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
                 market_index=self.market_id,
                 client_order_index=order_id,
                 base_amount=int(amount * self.base_amount_multiplier),
@@ -256,8 +250,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"放置单个订单时发生错误: {e}")
             return False, None
-        finally:
-            await api_client.close()
             
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, Optional[int]]:
         """
@@ -270,9 +262,7 @@ class GridTrading:
         Returns:
             Tuple[bool, Optional[int]]: (是否成功放置订单, 订单ID)
         """
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        transaction_api = lighter.TransactionApi(api_client)
+        transaction_api = lighter.TransactionApi()
         
         try:
             # 获取nonce
@@ -291,7 +281,7 @@ class GridTrading:
             
             # 签名市价单
             order_id = int(time.time() * 1000) % 1000000
-            tx_type, tx_info, error = self.signer_client.sign_create_order(
+            tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
                 market_index=self.market_id,
                 client_order_index=order_id,
                 base_amount=int(amount * self.base_amount_multiplier),
@@ -323,8 +313,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"放置市价单时发生错误: {e}")
             return False, None
-        finally:
-            await api_client.close()
 
     async def cancel_grid_orders(self, order_ids: List[int]) -> bool:
         """
@@ -337,9 +325,7 @@ class GridTrading:
             bool: 是否成功取消订单
         """
         
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        transaction_api = lighter.TransactionApi(api_client)
+        transaction_api = lighter.TransactionApi()
         
         try:
             next_nonce = await transaction_api.next_nonce(
@@ -352,7 +338,7 @@ class GridTrading:
             tx_infos = []
                 
             for order_id in order_ids:       
-                tx_type, tx_info, error = self.signer_client.sign_cancel_order(
+                tx_type, tx_info, tx_hash, error = self.signer_client.sign_cancel_order(
                     market_index=self.market_id,
                     order_index=order_id,
                     nonce=nonce_value,
@@ -381,8 +367,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"取消网格订单时发生错误: {e}")
             return False
-        finally:
-            await api_client.close()
             
     async def modify_grid_order(self, order_id: int, new_price: float, new_amount: float) -> bool:
         """
@@ -397,9 +381,7 @@ class GridTrading:
             bool: 是否成功修改订单
         """
         
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        transaction_api = lighter.TransactionApi(api_client)
+        transaction_api = lighter.TransactionApi()
         
         try:
             next_nonce = await transaction_api.next_nonce(
@@ -408,7 +390,7 @@ class GridTrading:
             nonce_value = next_nonce.nonce
 
             # 签名修改订单
-            tx_type, tx_info, error = self.signer_client.sign_modify_order(
+            tx_type, tx_info, tx_hash, error = self.signer_client.sign_modify_order(
                 market_index=self.market_id,
                 order_index=order_id,
                 price=int(new_price * self.price_multiplier),
@@ -435,8 +417,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"修改订单时发生错误: {e}")
             return False
-        finally:
-            await api_client.close()
             
     async def get_orders_by_rest(self) -> List[lighter.Order]:
         """
@@ -446,15 +426,11 @@ class GridTrading:
             订单列表或None（如果获取失败）
         """
         
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        order_api = lighter.OrderApi(api_client)
+        order_api = lighter.OrderApi()
         
         try:
-            expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
-            auth, err = self.signer_client.create_auth_token_with_expiry(
-                deadline=expiry
-            )
+            # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
+            auth, err = self.signer_client.create_auth_token_with_expiry()
             if err is not None:
                 logger.error(f"创建认证令牌失败: {auth}")
                 return
@@ -469,8 +445,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"通过REST检查当前订单时发生错误: {e}")
             return None
-        finally:
-            await api_client.close()
             
     async def get_trades_by_rest(self, ask_filter: int, limit: int) -> List[lighter.Trade]:
         """
@@ -480,15 +454,11 @@ class GridTrading:
             成交记录列表或None（如果获取失败）
         """
         
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        order_api = lighter.OrderApi(api_client)
+        order_api = lighter.OrderApi()
         
         try:
-            expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
-            auth, err = self.signer_client.create_auth_token_with_expiry(
-                deadline=expiry
-            )
+            # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
+            auth, err = self.signer_client.create_auth_token_with_expiry()
             if err is not None:
                 logger.error(f"创建认证令牌失败: {auth}")
                 return
@@ -506,8 +476,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"通过REST检查当前成交记录时发生错误: {e}")
             return None
-        finally:
-            await api_client.close()
 
     @staticmethod
     def _resolution_to_seconds(resolution: str) -> int:
@@ -542,9 +510,7 @@ class GridTrading:
         end_time = int(time.time())
         start_time = end_time - resolution_seconds * count_back
         
-        configuration = lighter.Configuration(BASE_URL)
-        api_client = lighter.ApiClient(configuration)
-        candle_api = lighter.CandlestickApi(api_client)
+        candle_api = lighter.CandlestickApi()
         
         try:
             resp = await candle_api.candlesticks(
@@ -579,8 +545,6 @@ class GridTrading:
         except Exception as e:
             logger.error(f"通过REST请求K线数据时发生错误: {e}")
             return None
-        finally:
-            await api_client.close()
 
         return df
 

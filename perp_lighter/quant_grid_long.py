@@ -184,6 +184,7 @@ async def _reduce_position():
     # 只允许此比例的收益用来减仓，以保留收益
     REDUCE_MULTIPLIER = 0.7
 
+    # TODO 此处还是有问题，如果始终用总的动态收益去减仓，那可能收益永远维持在固定值，疲于降仓
     highest_lost = round(await _highest_order_lost(), 6)
     if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
         # 当前动态收益不够降仓
@@ -1252,16 +1253,17 @@ async def run_grid_trading():
     logger.info(f"配置参数: {GRID_CONFIG}")
 
     # 创建签名客户端
+    private_keys = {}
+    private_keys[API_KEY_INDEX] = API_KEY_PRIVATE_KEY
     signer_client = lighter.SignerClient(
         url=BASE_URL,
-        private_key=API_KEY_PRIVATE_KEY,
+        api_private_keys=private_keys,
         account_index=ACCOUNT_INDEX,
-        api_key_index=API_KEY_INDEX,
     )
 
     # 创建认证令牌
-    expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
-    auth, err = signer_client.create_auth_token_with_expiry(deadline=expiry)
+    # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
+    auth, err = signer_client.create_auth_token_with_expiry()
     if err is not None:
         logger.error(f"创建认证令牌失败: {auth}")
         return

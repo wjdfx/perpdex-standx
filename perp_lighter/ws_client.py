@@ -698,6 +698,7 @@ class UnifiedWebSocketClient:
         """
         try:
             # 调用回调函数
+            # logger.info(f"generic message: {message}")
             self.on_generic_message_update(message)
         except Exception as e:
             logger.error(f"Error handling generic message: {e}")
@@ -875,16 +876,15 @@ class UnifiedWebSocketClient:
                 ACCOUNT_INDEX,
                 API_KEY_INDEX,
             )
+            private_keys = {}
+            private_keys[API_KEY_INDEX] = API_KEY_PRIVATE_KEY
             signer_client = SignerClient(
                 url=BASE_URL,
-                private_key=API_KEY_PRIVATE_KEY,
+                api_private_keys=private_keys,
                 account_index=ACCOUNT_INDEX,
-                api_key_index=API_KEY_INDEX,
             )
-            expiry = int(time.time()) + 10 * SignerClient.MINUTE
-            auth, err = signer_client.create_auth_token_with_expiry(
-                deadline=expiry
-            )
+            # expiry = int(time.time()) + 10 * SignerClient.MINUTE
+            auth, err = signer_client.create_auth_token_with_expiry()
             if err is not None:
                 logger.error(f"创建认证令牌失败: {auth}")
                 return
@@ -1015,18 +1015,17 @@ class UnifiedWebSocketClient:
                     ACCOUNT_INDEX,
                     API_KEY_INDEX,
                 )
+                private_keys = {}
+                private_keys[API_KEY_INDEX] = API_KEY_PRIVATE_KEY
                 signer_client = SignerClient(
                     url=BASE_URL,
-                    private_key=API_KEY_PRIVATE_KEY,
+                    api_private_keys=private_keys,
                     account_index=ACCOUNT_INDEX,
-                    api_key_index=API_KEY_INDEX,
                 )
 
                 # 创建认证令牌
-                expiry = int(time.time()) + 10 * SignerClient.MINUTE
-                auth, err = signer_client.create_auth_token_with_expiry(
-                    deadline=expiry
-                )
+                # expiry = int(time.time()) + 10 * SignerClient.MINUTE
+                auth, err = signer_client.create_auth_token_with_expiry()
                 if err is not None:
                     logger.error(f"创建认证令牌失败: {auth}")
                     return

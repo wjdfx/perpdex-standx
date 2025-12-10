@@ -1,7 +1,5 @@
 # perp_lighter 项目依赖 (第三方库)
-
-# 核心 API SDK
-git+https://github.com/elliottech/lighter-python.git
+git+https://github.com/elliottech/lighter-python.git@v1.0.1
 
 # 数据分析
 pandas
