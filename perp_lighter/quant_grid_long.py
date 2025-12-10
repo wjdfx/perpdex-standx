@@ -186,12 +186,12 @@ async def _reduce_position():
 
     # TODO 此处还是有问题，如果始终用总的动态收益去减仓，那可能收益永远维持在固定值，疲于降仓
     highest_lost = round(await _highest_order_lost(), 6)
-    # if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
-    #     # 当前动态收益不够降仓
-    #     logger.info(
-    #         f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
-    #     )
-    #     return
+    if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
+        # 当前动态收益不够降仓
+        logger.info(
+            f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+        )
+        return
     
     # 降低占位订单交易数量
     if len(trading_state.pause_orders) > 0:
