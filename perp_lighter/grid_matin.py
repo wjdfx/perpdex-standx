@@ -168,30 +168,73 @@ class GridTrading:
         except Exception as e:
             logger.exception(f"放置网格订单时发生错误: {e}")
             return False
-
-    def check_position_size(self) -> Optional[float]:
+        
+    async def place_multi_orders(self, orders: List[Tuple[bool, float, float]]) -> Tuple[bool, List[int]]:
         """
-        检查当前仓位大小
+        放置多个订单
+
+        Args:
+            orders: 订单列表，每个元素为 (is_ask, price, amount) 元组
 
         Returns:
-            当前仓位大小，如果获取失败返回None
+            Tuple[bool, List[int]]: (是否成功放置所有订单, 订单ID列表)
         """
+        
+        transaction_api = lighter.TransactionApi()
+        order_ids = []
+            
         try:
-            positions = self.ws_client.get_account_all_positions(self.account_index)
-            if positions is None:
-                logger.warning("无法获取当前仓位")
-                return None
+            next_nonce = await transaction_api.next_nonce(
+                account_index=self.account_index, api_key_index=self.api_key_index
+            )
+            nonce_value = next_nonce.nonce
 
-            # 假设只有一个市场，获取该市场的仓位
-            for market_index, position in positions.items():
-                position_size = float(position.get('position', '0'))
-                return position_size
+            # 准备交易信息
+            tx_types = []
+            tx_infos = []
+            client_order_index = int(time.time() * 1000) % 1000000
 
-            return 0.0  # 没有仓位
+            for is_ask, price, amount in orders:
+                # 签名订单
+                tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
+                    market_index=self.market_id,
+                    client_order_index=client_order_index,
+                    base_amount=int(amount * self.base_amount_multiplier),
+                    price=int(price * self.price_multiplier),
+                    is_ask=is_ask,
+                    order_type=self.signer_client.ORDER_TYPE_LIMIT,
+                    time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    reduce_only=False,
+                    trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
+                    nonce=nonce_value,
+                )
+
+                if error is not None:
+                    logger.error(f"签名订单失败 (价格={price}, 数量={amount}): {error}")
+                    return False, []
+
+                # 累积交易类型和信息到列表中
+                tx_types.append(tx_type)
+                tx_infos.append(tx_info)
+                order_ids.append(client_order_index)
+
+                client_order_index += 1
+                nonce_value += 1
+
+            # 发送批量交易
+            success = await self.ws_client.send_batch_tx_async(tx_types, tx_infos)
+
+            if success:
+                logger.info(f"成功放置 {len(orders)} 个订单")
+                return True, order_ids
+            else:
+                logger.error("批量发送订单失败")
+                return False, []
 
         except Exception as e:
-            logger.error(f"检查仓位大小时发生错误: {e}")
-            return None
+            logger.error(f"放置多个订单时发生错误: {e}")
+            return False, []
+    
 
     async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, Optional[int]]:
         """

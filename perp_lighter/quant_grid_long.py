@@ -217,18 +217,17 @@ async def _reduce_position():
             )
             del trading_state.pause_orders[order_id]
 
-    # 这里可以尝试不降仓，因为占位订单降低数量后，当前区间会允许下额外卖单
-    # # 降仓
-    # success, order_id = await trading_state.grid_trading.place_single_market_order(
-    #     is_ask=True, 
-    #     price=trading_state.current_price,
-    #     amount=GRID_CONFIG["GRID_AMOUNT"]
-    # )
-    # if success:
-    #     trading_state.active_profit = trading_state.active_profit - highest_lost
-    #     logger.info(
-    #         f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
-    #     )
+    # 降仓
+    success, order_id = await trading_state.grid_trading.place_single_market_order(
+        is_ask=True, 
+        price=trading_state.current_price,
+        amount=GRID_CONFIG["GRID_AMOUNT"]
+    )
+    if success:
+        trading_state.active_profit = trading_state.active_profit - highest_lost
+        logger.info(
+            f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+        )
         
     
 
@@ -442,20 +441,40 @@ async def _buy_side_filled_order():
         return
 
     logger.info("买单侧被吃单补单")
+    orders = []
     # 买单侧被吃单补充买单
     if (
         not trading_state.grid_pause
         and len(trading_state.buy_orders) < GRID_CONFIG["GRID_COUNT"]
     ):
-        await _buy_side_replenish_buy_order()
+        buy_order = await _buy_side_replenish_buy_order()
+        if buy_order:
+            orders.append(buy_order)
 
     # 买单侧被吃单补充卖单
-    await _buy_side_replenish_sell_order()
+    sell_order = await _buy_side_replenish_sell_order()
+    if sell_order:
+        orders.append(sell_order)
+
+    if orders:
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+        if success:
+            for idx, oid in enumerate(order_ids):
+                is_ask, price, _ = orders[idx]
+                if is_ask:
+                    trading_state.sell_orders[oid] = price
+                else:
+                    trading_state.buy_orders[oid] = price
+            logger.info(
+                f"买单侧被吃单补充订单成功: {[( '买单' if not is_ask else '卖单', price) for is_ask, price, _ in orders]}, 订单ID={order_ids}"
+            )
+        else:
+            logger.error("买单侧补充订单 place_multi_orders 失败")
 
 
 async def _buy_side_replenish_buy_order():
     """
-    买单侧被吃单到补充买单
+    买单侧被吃单到补充买单 - 返回订单数据
     """
     global trading_state
 
@@ -470,22 +489,13 @@ async def _buy_side_replenish_buy_order():
         new_buy_price = round(
             new_buy_price - trading_state.active_grid_signle_price, 2
         )
-    # 执行订单补充
-    success, order_id = await trading_state.grid_trading.place_single_order(
-        is_ask=False,
-        price=new_buy_price,
-        amount=GRID_CONFIG["GRID_AMOUNT"],
-    )
-    if success:
-        trading_state.buy_orders[order_id] = new_buy_price
-        logger.info(
-            f"买单侧被吃单补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
-        )
+    amount = GRID_CONFIG["GRID_AMOUNT"]
+    return (False, new_buy_price, amount)
 
 
 async def _buy_side_replenish_sell_order():
     """
-    买单侧被吃单到补充卖单
+    买单侧被吃单到补充卖单 - 返回订单数据
     """
     global trading_state
 
@@ -517,18 +527,10 @@ async def _buy_side_replenish_sell_order():
 
     # 当前价格超过新补单价格时，不补单
     if trading_state.current_price < new_sell_price:
-        # 执行订单补充
-        success, order_id = await trading_state.grid_trading.place_single_order(
-            is_ask=True,
-            price=new_sell_price,
-            amount=GRID_CONFIG["GRID_AMOUNT"],
-        )
-        if success:
-            # 更新sell_orders_prices而不是trading_state.sell_prices
-            trading_state.sell_orders[order_id] = new_sell_price
-            logger.info(
-                f"买单侧被吃单补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
-            )
+        amount = GRID_CONFIG["GRID_AMOUNT"]
+        return (True, new_sell_price, amount)
+
+    return None
 
 
 async def _sell_side_filled_order():
@@ -541,22 +543,42 @@ async def _sell_side_filled_order():
         return
 
     logger.info("卖单侧被吃单补单")
+    orders = []
     # 卖单侧被吃单到补充买单
     if not trading_state.grid_pause:
-        await _sell_side_replenish_buy_order()
-        
+        buy_order = await _sell_side_replenish_buy_order()
+        if buy_order:
+            orders.append(buy_order)
+
     # 卖单侧被吃单到补充卖单
     if (
         trading_state.available_position_size > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
         and len(trading_state.sell_orders) > 0
         and trading_state.current_position_sign > 0
     ):
-        await _sell_side_replenish_sell_order()
+        sell_order = await _sell_side_replenish_sell_order()
+        if sell_order:
+            orders.append(sell_order)
+
+    if orders:
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+        if success:
+            for idx, oid in enumerate(order_ids):
+                is_ask, price, _ = orders[idx]
+                if is_ask:
+                    trading_state.sell_orders[oid] = price
+                else:
+                    trading_state.buy_orders[oid] = price
+            logger.info(
+                f"卖单侧被吃单补充订单成功: {[( '买单' if not is_ask else '卖单', price) for is_ask, price, _ in orders]}, 订单ID={order_ids}"
+            )
+        else:
+            logger.error("卖单侧补充订单 place_multi_orders 失败")
 
 
 async def _sell_side_replenish_buy_order():
     """
-    卖单侧被吃单到补充买单
+    卖单侧被吃单到补充买单 - 返回订单数据
     """
     global trading_state
 
@@ -567,22 +589,13 @@ async def _sell_side_replenish_buy_order():
         high_buy_price = max(trading_state.buy_orders.values())
 
     new_buy_price = round(high_buy_price + trading_state.active_grid_signle_price, 2)
-    # 执行订单补充
-    success, order_id = await trading_state.grid_trading.place_single_order(
-        is_ask=False,
-        price=new_buy_price,
-        amount=GRID_CONFIG["GRID_AMOUNT"],
-    )
-    if success:
-        trading_state.buy_orders[order_id] = new_buy_price
-        logger.info(
-            f"卖单侧被吃单补充买单订单成功: 价格={new_buy_price}, 订单ID={order_id}"
-        )
+    amount = GRID_CONFIG["GRID_AMOUNT"]
+    return (False, new_buy_price, amount)
 
 
 async def _sell_side_replenish_sell_order():
     """
-    卖单侧被吃单到补充卖单
+    卖单侧被吃单到补充卖单 - 返回订单数据
     """
     global trading_state
 
@@ -600,17 +613,8 @@ async def _sell_side_replenish_sell_order():
             + trading_state.active_grid_signle_price
         )
 
-    # 执行订单补充
-    success, order_id = await trading_state.grid_trading.place_single_order(
-        is_ask=True,
-        price=new_sell_price,
-        amount=GRID_CONFIG["GRID_AMOUNT"],
-    )
-    if success:
-        trading_state.sell_orders[order_id] = new_sell_price
-        logger.info(
-            f"卖单侧被吃单补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
-        )
+    amount = GRID_CONFIG["GRID_AMOUNT"]
+    return (True, new_sell_price, amount)
 
 
 async def _over_range_replenish_order():
@@ -1196,11 +1200,11 @@ async def _risk_check(start: bool = False):
             trading_state.pause_position_exist = False
             # logger.info("✅ 当前风控检查通过，恢复网格交易")
             
-    if trading_state.grid_decrease_status:
-        logger.info(
-            f"⚠️ 警告：仓位超出降低点，开始降低仓位"
-        )
-        await _reduce_position()
+    # if trading_state.grid_decrease_status:
+    #     logger.info(
+    #         f"⚠️ 警告：仓位超出降低点，开始降低仓位"
+    #     )
+    #     await _reduce_position()
                     
 async def _save_pause_position():
     """
