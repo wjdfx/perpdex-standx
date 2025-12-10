@@ -39,7 +39,7 @@ class GridTrading:
         # 价格和数量乘数（与quant.py保持一致）
         self.base_amount_multiplier = pow(10, 4)
         self.price_multiplier = pow(10, 2)
-        
+
     def check_current_orders(self) -> Optional[List[dict]]:
         """
         检查当前账户的所有订单
@@ -118,8 +118,6 @@ class GridTrading:
                         f"网格数量={grid_count}, 单网格量={grid_amount}, 价差={grid_spread}%")
             logger.info(f"订单详情: {[(f'卖单' if is_ask else '买单', price, amount) for is_ask, price, amount in orders]}")
 
-            # 获取nonce（需要使用正确的API调用方式）
-            # 假设通过transaction_api获取nonce，与quant.py保持一致
             
             next_nonce = await transaction_api.next_nonce(
                 account_index=self.account_index, api_key_index=self.api_key_index

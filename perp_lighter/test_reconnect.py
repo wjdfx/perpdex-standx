@@ -50,7 +50,7 @@ async def test_reconnect():
     except KeyboardInterrupt:
         logger.info("用户中断测试")
     except Exception as e:
-        logger.error(f"测试过程中发生错误: {e}")
+        logger.exception(f"测试过程中发生错误: {e}")
     finally:
         client.stop()
         logger.info("测试结束")

@@ -35,7 +35,7 @@ async def main():
         lighter.SignerClient.DEFAULT_10_MIN_AUTH_EXPIRY
     )
     if err is not None:
-        logger.error(f"创建认证令牌失败: {auth}")
+        logger.exception(f"创建认证令牌失败: {auth}")
         return
 
     # 创建网格交易实例

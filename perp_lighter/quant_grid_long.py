@@ -112,7 +112,7 @@ async def on_market_stats_update(market_id: str, market_stats: dict):
                         min_step, min(raw_step, max_step)
                     )
             except Exception as e:
-                logger.error(f"Error checking jidie in market stats update: {e}")
+                logger.exception(f"Error checking jidie in market stats update: {e}")
 
 
 async def on_account_all_orders_update(account_id: str, orders: dict):
@@ -186,46 +186,51 @@ async def _reduce_position():
 
     # TODO 此处还是有问题，如果始终用总的动态收益去减仓，那可能收益永远维持在固定值，疲于降仓
     highest_lost = round(await _highest_order_lost(), 6)
-    if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
-        # 当前动态收益不够降仓
-        logger.info(
-            f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+    # if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
+    #     # 当前动态收益不够降仓
+    #     logger.info(
+    #         f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+    #     )
+    #     return
+    
+    # 降低占位订单交易数量
+    if len(trading_state.pause_orders) > 0:
+        logger.info(f"占位订单: {trading_state.pause_orders}")
+        pause_orders = dict(
+            sorted(
+                trading_state.pause_orders.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
         )
-        return
+        order_id, max_price = list(pause_orders.items())[0]
+        success = await trading_state.grid_trading.modify_grid_order(
+            order_id=order_id,
+            new_price=max_price,
+            new_amount=round(trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"], 6),
+        )
+        if success:
+            trading_state.pause_positions[max_price] = trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"]
+            trading_state.active_profit = trading_state.active_profit - highest_lost
+            logger.info(
+                f"降低占位订单交易数量成功，订单ID: {order_id}, 新数量: {trading_state.pause_positions[max_price]}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+            )
+            del trading_state.pause_orders[order_id]
 
-    success, order_id = await trading_state.grid_trading.place_single_market_order(
-        is_ask=True, 
-        price=trading_state.current_price,
-        amount=GRID_CONFIG["GRID_AMOUNT"]
-    )
-    if success:
-        trading_state.active_profit = trading_state.active_profit - highest_lost
-        logger.info(
-            f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
-        )
+    # 这里可以尝试不降仓，因为占位订单降低数量后，当前区间会允许下额外卖单
+    # # 降仓
+    # success, order_id = await trading_state.grid_trading.place_single_market_order(
+    #     is_ask=True, 
+    #     price=trading_state.current_price,
+    #     amount=GRID_CONFIG["GRID_AMOUNT"]
+    # )
+    # if success:
+    #     trading_state.active_profit = trading_state.active_profit - highest_lost
+    #     logger.info(
+    #         f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+    #     )
         
-        # 降低占位订单交易数量
-        if len(trading_state.pause_orders) > 0:
-            logger.info(f"占位订单: {trading_state.pause_orders}")
-            pause_orders = dict(
-                sorted(
-                    trading_state.pause_orders.items(),
-                    key=lambda item: item[1],
-                    reverse=True,
-                )
-            )
-            order_id, max_price = list(pause_orders.items())[0]
-            success = await trading_state.grid_trading.modify_grid_order(
-                order_id=order_id,
-                new_price=max_price,
-                new_amount=trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"],
-            )
-            if success:
-                trading_state.pause_positions[max_price] = trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"]
-                logger.info(
-                    f"降低占位订单交易数量成功，订单ID: {order_id}, 新数量: {trading_state.pause_positions[max_price]}"
-                )
-                del trading_state.pause_orders[order_id]
+    
 
 #######################################################
 
@@ -406,7 +411,7 @@ async def replenish_grid(filled_signal: bool):
     if len(trading_state.buy_orders) == 0 and len(trading_state.sell_orders) == 0:
         # 初始化网格交易
         if not await initialize_grid_trading(trading_state.grid_trading):
-            logger.error("网格交易初始化失败，退出")
+            logger.exception("网格交易初始化失败，退出")
             return
 
     try:
@@ -985,7 +990,7 @@ async def _sync_current_orders():
     # 通过rest api核对当前订单列表
     orders = await trading_state.grid_trading.get_orders_by_rest()
     if orders is None:
-        logger.error("通过REST API获取当前订单失败")
+        logger.exception("通过REST API获取当前订单失败")
         return
     # 以orders为准，更新buy_orders和sell_orders
     buy_orders = {}
@@ -1061,7 +1066,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             wait_count += 1
 
         if trading_state.current_price is None:
-            logger.error("无法获取当前价格，初始化失败")
+            logger.exception("无法获取当前价格，初始化失败")
             return False
 
         # 放置初始网格订单
@@ -1111,11 +1116,11 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             trading_state.is_running = True
             return True
         else:
-            logger.error("❌ 网格交易初始化失败")
+            logger.exception("❌ 网格交易初始化失败")
             return False
 
     except Exception as e:
-        logger.error(f"初始化网格交易时发生错误: {e}")
+        logger.exception(f"初始化网格交易时发生错误: {e}")
         return False
     finally:
         await rest_client.close()
@@ -1265,7 +1270,7 @@ async def run_grid_trading():
     # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
     auth, err = signer_client.create_auth_token_with_expiry()
     if err is not None:
-        logger.error(f"创建认证令牌失败: {auth}")
+        logger.exception(f"创建认证令牌失败: {auth}")
         return
 
     # 创建网格交易实例
@@ -1309,7 +1314,7 @@ async def run_grid_trading():
                     
         # # 初始化网格交易
         if not await initialize_grid_trading(grid_trading):
-            logger.error("网格交易初始化失败，退出")
+            logger.exception("网格交易初始化失败，退出")
             return
 
         # 保持运行并监控

@@ -350,7 +350,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             wait_count += 1
 
         if trading_state.current_price is None:
-            logger.error("无法获取当前价格，初始化失败")
+            logger.exception("无法获取当前价格，初始化失败")
             return False
         
         
@@ -398,11 +398,11 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             trading_state.is_running = True
             return True
         else:
-            logger.error("❌ 网格交易初始化失败")
+            logger.exception("❌ 网格交易初始化失败")
             return False
 
     except Exception as e:
-        logger.error(f"初始化网格交易时发生错误: {e}")
+        logger.exception(f"初始化网格交易时发生错误: {e}")
         return False
     finally:
         await rest_client.close()
@@ -641,7 +641,7 @@ async def replenish_grid():
             # low_sell_price = sell_orders_prices[0]
 
     except Exception as e:
-        logger.error(f"补充网格订单时发生错误: {e}")
+        logger.exception(f"补充网格订单时发生错误: {e}")
 
 
 async def check_current_orders():
@@ -756,7 +756,7 @@ async def check_current_orders():
     # 通过rest api核对当前订单列表
     orders = await trading_state.grid_trading.get_orders_by_rest()
     if orders is None:
-        logger.error("通过REST API获取当前订单失败")
+        logger.exception("通过REST API获取当前订单失败")
         return
     # 以orders为准，更新buy_orders和sell_orders
     buy_orders = {}
@@ -811,7 +811,7 @@ async def run_grid_trading():
         deadline=expiry
     )
     if err is not None:
-        logger.error(f"创建认证令牌失败: {auth}")
+        logger.exception(f"创建认证令牌失败: {auth}")
         return
 
     # 创建网格交易实例
@@ -850,7 +850,7 @@ async def run_grid_trading():
 
         # 初始化网格交易
         if not await initialize_grid_trading(grid_trading):
-            logger.error("网格交易初始化失败，退出")
+            logger.exception("网格交易初始化失败，退出")
             return
 
         # 保持运行并监控
@@ -907,7 +907,7 @@ async def run_grid_trading():
     except KeyboardInterrupt:
         logger.info("👋 收到停止信号")
     except Exception as e:
-        logger.error(f"网格交易运行时发生错误: {e}")
+        logger.exception(f"网格交易运行时发生错误: {e}")
     finally:
         trading_state.is_running = False
         await signer_client.close()

@@ -185,8 +185,8 @@ class UnifiedWebSocketClient:
                 self.handle_generic_message(message)
 
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            logger.error(f"Message: {message}")
+            logger.exception(f"Error processing message: {e}")
+            logger.exception(f"Message: {message}")
 
     async def on_message_async(self, message):
         """
@@ -224,8 +224,8 @@ class UnifiedWebSocketClient:
                 await self.handle_generic_message_async(message)
 
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
-            logger.error(f"Message: {message}")
+            logger.exception(f"Error processing message: {e}")
+            logger.exception(f"Message: {message}")
 
     def handle_connected(self):
         """
@@ -486,7 +486,7 @@ class UnifiedWebSocketClient:
             self.on_market_stats_update(market_id, market_stats)
 
         except Exception as e:
-            logger.error(f"Error handling market stats update: {e}")
+            logger.exception(f"Error handling market stats update: {e}")
 
     async def handle_update_market_stats_async(self, message):
         """
@@ -520,7 +520,7 @@ class UnifiedWebSocketClient:
                 self.on_market_stats_update(market_id, market_stats)
 
         except Exception as e:
-            logger.error(f"Error handling market stats update: {e}")
+            logger.exception(f"Error handling market stats update: {e}")
 
     def handle_update_order_book(self, message):
         """
@@ -545,7 +545,7 @@ class UnifiedWebSocketClient:
             self.on_order_book_update(market_id, order_book_data)
 
         except Exception as e:
-            logger.error(f"Error handling order book update: {e}")
+            logger.exception(f"Error handling order book update: {e}")
 
     async def handle_update_order_book_async(self, message):
         """
@@ -570,7 +570,7 @@ class UnifiedWebSocketClient:
             self.on_order_book_update(market_id, order_book_data)
 
         except Exception as e:
-            logger.error(f"Error handling order book update: {e}")
+            logger.exception(f"Error handling order book update: {e}")
 
     def handle_update_account_all_orders(self, message):
         """
@@ -595,7 +595,7 @@ class UnifiedWebSocketClient:
             self.on_account_all_orders_update(account_id, orders)
 
         except Exception as e:
-            logger.error(f"Error handling account all orders update: {e}")
+            logger.exception(f"Error handling account all orders update: {e}")
 
     async def handle_update_account_all_orders_async(self, message):
         """
@@ -625,7 +625,7 @@ class UnifiedWebSocketClient:
                 self.on_account_all_orders_update(account_id, orders)
 
         except Exception as e:
-            logger.error(f"Error handling account all orders update: {e}")
+            logger.exception(f"Error handling account all orders update: {e}")
 
     def handle_update_account_all_positions(self, message):
         """
@@ -690,7 +690,7 @@ class UnifiedWebSocketClient:
             # 调用回调函数
             self.on_generic_message_update(message)
         except Exception as e:
-            logger.error(f"Error handling generic message: {e}")
+            logger.exception(f"Error handling generic message: {e}")
 
     async def handle_generic_message_async(self, message):
         """
@@ -701,7 +701,7 @@ class UnifiedWebSocketClient:
             # logger.info(f"generic message: {message}")
             self.on_generic_message_update(message)
         except Exception as e:
-            logger.error(f"Error handling generic message: {e}")
+            logger.exception(f"Error handling generic message: {e}")
 
     def send_message(self, message):
         """
@@ -711,7 +711,7 @@ class UnifiedWebSocketClient:
             try:
                 self.ws.send(json.dumps(message))
             except Exception as e:
-                logger.error(f"Error sending message: {e}")
+                logger.exception(f"Error sending message: {e}")
         else:
             logger.warning("WebSocket is not connected")
 
@@ -723,7 +723,7 @@ class UnifiedWebSocketClient:
             try:
                 await self.ws.send(json.dumps(message))
             except Exception as e:
-                logger.error(f"Error sending message: {e}")
+                logger.exception(f"Error sending message: {e}")
         else:
             logger.warning("WebSocket is not connected")
 
@@ -754,7 +754,7 @@ class UnifiedWebSocketClient:
             logger.info(f"Sent batch transaction with {len(tx_types)} transactions")
             return True
         except Exception as e:
-            logger.error(f"Error sending batch transaction: {e}")
+            logger.exception(f"Error sending batch transaction: {e}")
             return False
 
     async def send_batch_tx_async(self, tx_types, tx_infos):
@@ -784,7 +784,7 @@ class UnifiedWebSocketClient:
             logger.info(f"Sent batch transaction with {len(tx_types)} transactions")
             return True
         except Exception as e:
-            logger.error(f"Error sending batch transaction: {e}")
+            logger.exception(f"Error sending batch transaction: {e}")
             return False
 
     def send_single_tx(self, tx_type, tx_info):
@@ -886,7 +886,7 @@ class UnifiedWebSocketClient:
             # expiry = int(time.time()) + 10 * SignerClient.MINUTE
             auth, err = signer_client.create_auth_token_with_expiry()
             if err is not None:
-                logger.error(f"创建认证令牌失败: {auth}")
+                logger.exception(f"创建认证令牌失败: {auth}")
                 return
             self.auth_token = auth
             
@@ -896,9 +896,9 @@ class UnifiedWebSocketClient:
                 self.reconnect_attempts = 0
                 self.is_reconnecting = False
         except Exception as e:
-            logger.error("重连失败")
+            logger.exception("重连失败")
             if self.reconnect_attempts >= self.max_reconnect_attempts:
-                logger.error(f"已达到最大重连次数 ({self.max_reconnect_attempts})，停止重连")
+                logger.exception(f"已达到最大重连次数 ({self.max_reconnect_attempts})，停止重连")
                 self.is_reconnecting = False
             else:
                 # 继续重连
@@ -975,7 +975,7 @@ class UnifiedWebSocketClient:
                 self.on_message(message)
 
         except Exception as e:
-            logger.error(f"WebSocket error: {e}")
+            logger.exception(f"WebSocket error: {e}")
         finally:
             self.running = False
             if self.ws:
@@ -1027,7 +1027,7 @@ class UnifiedWebSocketClient:
                 # expiry = int(time.time()) + 10 * SignerClient.MINUTE
                 auth, err = signer_client.create_auth_token_with_expiry()
                 if err is not None:
-                    logger.error(f"创建认证令牌失败: {auth}")
+                    logger.exception(f"创建认证令牌失败: {auth}")
                     return
                 self.auth_token = auth
                 
@@ -1043,7 +1043,7 @@ class UnifiedWebSocketClient:
                     await self.on_message_async(message)
 
             except Exception as e:
-                logger.error(f"WebSocket error: {e}")
+                logger.exception(f"WebSocket error: {e}")
                 
                 # 如果启用了自动重连且未达到最大重连次数
                 if self.auto_reconnect and self.reconnect_attempts < self.max_reconnect_attempts:
@@ -1054,7 +1054,7 @@ class UnifiedWebSocketClient:
                 else:
                     # 达到最大重连次数或未启用自动重连
                     if self.auto_reconnect and self.reconnect_attempts >= self.max_reconnect_attempts:
-                        logger.error(f"已达到最大重连次数 ({self.max_reconnect_attempts})，停止重连")
+                        logger.exception(f"已达到最大重连次数 ({self.max_reconnect_attempts})，停止重连")
                     break
             finally:
                 if self.ws:
