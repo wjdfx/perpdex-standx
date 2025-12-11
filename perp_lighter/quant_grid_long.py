@@ -1082,13 +1082,14 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         logger.info(f"🚀 初始化网格交易: 基准价格=${base_price}, 网格数量={grid_count}")
         trading_state.open_price = base_price
 
+        # 同步订单状态
+        await _sync_current_orders()
+        
         success = True
-        if account_info.total_order_count > 1:
+        if len(trading_state.buy_orders) > 0 or len(trading_state.sell_orders) > 0:
             logger.info(f"当前账户已有未结订单或仓位，以原始订单为准，跳过初始化网格交易")
             await check_current_orders()
         else:
-            # 同步订单状态
-            await _sync_current_orders()
             if not trading_state.grid_pause:
                 success = await grid_trading.place_grid_orders(
                     1, base_price, grid_count, grid_amount, grid_spread
