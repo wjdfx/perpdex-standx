@@ -226,7 +226,7 @@ async def _reduce_position():
     if success:
         trading_state.active_profit = trading_state.active_profit - highest_lost
         # 为避免始终疲于降仓，以致总收益永远上不去，每次用来减仓的利润中，剩余部分不再用于之后的减仓
-        trading_state.available_reduce_profit = round(highest_lost / REDUCE_MULTIPLIER, 2)
+        trading_state.available_reduce_profit = trading_state.available_reduce_profit - round(highest_lost / REDUCE_MULTIPLIER, 2)
         logger.info(
             f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
         )
