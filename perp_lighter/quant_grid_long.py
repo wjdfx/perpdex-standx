@@ -189,7 +189,7 @@ async def _reduce_position():
     if trading_state.available_reduce_profit * REDUCE_MULTIPLIER < highest_lost:
         # 当前动态收益不够降仓
         logger.info(
-            f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前可用减仓收益: {round(trading_state.available_reduce_profit, 2)}"
+            f"当前可用减仓收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前可用减仓收益: {round(trading_state.available_reduce_profit, 2)}"
         )
         return
     
@@ -1226,18 +1226,19 @@ async def _save_pause_position():
         position_price_range = trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.base_grid_single_price
         
         # 成本价理论上是最后价格 + 距离差价/2，占位订单价格设置在成本价上方一些，追求微盈利
-        order_price = round(trading_state.last_trade_price + position_price_range / 3 * 2, 2)
-        success, order_id = await trading_state.grid_trading.place_single_order(
-            is_ask=True,
-            price=order_price,
-            amount=trading_state.available_position_size,
-        )
-        if success:
-            trading_state.pause_position_exist = True
-            trading_state.available_position_size = 0.0
-            logger.info(
-                f"占位订单创建成功: 价格={order_price}, 订单ID={order_id}"
+        if trading_state.last_trade_price > 0:
+            order_price = round(trading_state.last_trade_price + position_price_range / 3 * 2, 2)
+            success, order_id = await trading_state.grid_trading.place_single_order(
+                is_ask=True,
+                price=order_price,
+                amount=trading_state.available_position_size,
             )
+            if success:
+                trading_state.pause_position_exist = True
+                trading_state.available_position_size = 0.0
+                logger.info(
+                    f"占位订单创建成功: 价格={order_price}, 订单ID={order_id}"
+                )
     except Exception as e:
         logger.exception(f"创建占位订单失败: {e}")
         
