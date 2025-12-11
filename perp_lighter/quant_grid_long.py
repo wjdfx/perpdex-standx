@@ -657,6 +657,7 @@ async def _over_range_replenish_buy_order(high_buy_price: float):
         if (
             not trading_state.last_filled_order_is_ask
             and len(trading_state.buy_orders) > 0
+            and len(trading_state.sell_orders) > 0
         ):
             # 如果上次成交订单是买单，则不补充买单
             logger.info("当前成交订单为买单，不补充买单")
