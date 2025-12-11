@@ -76,6 +76,7 @@ class GridTradingState:
         self.available_position_size: float = 0.0  # 可用仓位
         self.active_profit: float = 0.0  # 动态网格收益
         self.total_profit: float = 0.0  # 本次运行总收益
+        self.available_reduce_profit: float = 0.0  # 可用来减仓的收益
 
 
 # 全局状态实例
@@ -184,12 +185,11 @@ async def _reduce_position():
     # 只允许此比例的收益用来减仓，以保留收益
     REDUCE_MULTIPLIER = 0.7
 
-    # TODO 此处还是有问题，如果始终用总的动态收益去减仓，那可能收益永远维持在固定值，疲于降仓
     highest_lost = round(await _highest_order_lost(), 6)
-    if trading_state.active_profit * REDUCE_MULTIPLIER < highest_lost:
+    if trading_state.available_reduce_profit * REDUCE_MULTIPLIER < highest_lost:
         # 当前动态收益不够降仓
         logger.info(
-            f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+            f"当前动态收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前可用减仓收益: {round(trading_state.available_reduce_profit, 2)}"
         )
         return
     
@@ -211,12 +211,12 @@ async def _reduce_position():
         )
         if success:
             trading_state.pause_positions[max_price] = trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"]
-            trading_state.active_profit = trading_state.active_profit - highest_lost
             logger.info(
-                f"降低占位订单交易数量成功，订单ID: {order_id}, 新数量: {trading_state.pause_positions[max_price]}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
+                f"降低占位订单交易数量成功，订单ID: {order_id}, 新数量: {trading_state.pause_positions[max_price]}"
             )
             del trading_state.pause_orders[order_id]
 
+    await asyncio.sleep(0.5)
     # 降仓
     success, order_id = await trading_state.grid_trading.place_single_market_order(
         is_ask=True, 
@@ -225,6 +225,8 @@ async def _reduce_position():
     )
     if success:
         trading_state.active_profit = trading_state.active_profit - highest_lost
+        # 为避免始终疲于降仓，以致总收益永远上不去，每次用来减仓的利润中，剩余部分不再用于之后的减仓
+        trading_state.available_reduce_profit = round(highest_lost / REDUCE_MULTIPLIER, 2)
         logger.info(
             f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
         )
@@ -289,8 +291,10 @@ async def check_order_fills(orders: dict):
                             )
                             
                             # 收到卖单成交时，证明完成了一次网格套利，记录套利收益
-                            trading_state.active_profit += trading_state.base_grid_single_price * GRID_CONFIG["GRID_AMOUNT"]
-                            trading_state.total_profit += trading_state.base_grid_single_price * GRID_CONFIG["GRID_AMOUNT"]
+                            once_profit = trading_state.base_grid_single_price * GRID_CONFIG["GRID_AMOUNT"]
+                            trading_state.active_profit += once_profit
+                            trading_state.total_profit += once_profit
+                            trading_state.available_reduce_profit += once_profit
                             
                     else:
                         if client_order_index in trading_state.buy_orders:
@@ -1201,11 +1205,15 @@ async def _risk_check(start: bool = False):
             trading_state.pause_position_exist = False
             # logger.info("✅ 当前风控检查通过，恢复网格交易")
             
-    # if trading_state.grid_decrease_status:
-    #     logger.info(
-    #         f"⚠️ 警告：仓位超出降低点，开始降低仓位"
-    #     )
-    #     await _reduce_position()
+    if trading_state.grid_pause and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]:
+        # 已经熔断状态下如果还有可用仓位，下占位单
+        await _save_pause_position()
+            
+    if trading_state.grid_decrease_status:
+        logger.info(
+            f"⚠️ 警告：仓位超出降低点，开始降低仓位"
+        )
+        await _reduce_position()
                     
 async def _save_pause_position():
     """
@@ -1226,6 +1234,7 @@ async def _save_pause_position():
         )
         if success:
             trading_state.pause_position_exist = True
+            trading_state.available_position_size = 0.0
             logger.info(
                 f"占位订单创建成功: 价格={order_price}, 订单ID={order_id}"
             )
@@ -1360,7 +1369,7 @@ async def run_grid_trading():
                 pnl = unrealized_collateral - trading_state.start_collateral
                 logger.info(
                     f"💰盈亏情况: 初始: {round(trading_state.start_collateral, 6)}, 当前: {round(unrealized_collateral, 6)}, 盈亏: {round(pnl,6)}, " + 
-                    f"本次套利总收益: {round(trading_state.total_profit, 2)}, 动态收益: {round(trading_state.active_profit, 2)}, " + 
+                    f"本次套利总收益: {round(trading_state.total_profit, 2)}, 动态收益: {round(trading_state.active_profit, 2)}, 可用减仓收益: {round(trading_state.available_reduce_profit, 2)} " + 
                     f"网格间距: {round(trading_state.active_grid_signle_price, 2)}"
                 )
                 time_formatted = await seconds_formatter(
