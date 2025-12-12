@@ -71,7 +71,7 @@ class GridTradingState:
         self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
         self.current_atr: float = 0.0  # 当前ATR值
         self.pause_positions: dict[float, float] = {}  # 熔断时的仓位映射, 价格->仓位
-        self.pause_orders: dict[str, float] = {}  # 占位订单ID到价格映射
+        self.pause_orders: dict[str, dict[str, float]] = {}  # 占位订单ID到价格与数量的映射
         self.pause_position_exist: bool = False  # 记录本次是否已经进行了熔断占位仓位下单
         self.available_position_size: float = 0.0  # 可用仓位
         self.active_profit: float = 0.0  # 动态网格收益
@@ -148,7 +148,7 @@ async def on_account_all_positions_update(account_id: str, positions: dict):
 #######################################################
 # 仓位管理部分
 #######################################################
-async def _cal_position_highest_order_price() -> float:
+async def _cal_position_highest_amount_price() -> float:
     """
     如果当前存在占位订单，则直接使用占位订单进行计算；
     如果没有占位订单，则按照当前最后的成交价格，加上仓位计算最高距离的订单价格
@@ -156,19 +156,23 @@ async def _cal_position_highest_order_price() -> float:
     global trading_state
 
     target_price = trading_state.last_trade_price + trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.base_grid_single_price
-    if len(trading_state.pause_positions):
-        target_price = max(trading_state.pause_positions.keys())
+    if len(trading_state.pause_orders):
+        order_id, order_info = max(
+            trading_state.pause_orders.items(),
+            key=lambda item: item[1]['amount']
+        )
+        target_price = order_info['price']
         
     return round(target_price, 6)
 
 
 async def _highest_order_lost() -> float:
     """
-    计算最高价格仓位浮亏
+    计算数量最大的的仓位浮亏
     """
     global trading_state
     
-    target_price = await _cal_position_highest_order_price()
+    target_price = await _cal_position_highest_amount_price()
     lost = (target_price - trading_state.current_price) * GRID_CONFIG["GRID_AMOUNT"]
     return lost
 
@@ -189,28 +193,25 @@ async def _reduce_position():
     if trading_state.available_reduce_profit * REDUCE_MULTIPLIER < highest_lost:
         # 当前动态收益不够降仓
         logger.info(
-            f"当前可用减仓收益不够降低仓位, 最高网格浮亏: {highest_lost}, 当前可用减仓收益: {round(trading_state.available_reduce_profit, 2)}"
+            f"当前可用减仓收益不够降低仓位, 需减仓网格浮亏: {highest_lost}, 当前可用减仓收益: {round(trading_state.available_reduce_profit, 2)}"
         )
         return
     
-    # 降低占位订单交易数量
+    # 降低占位订单交易数量，对数量最大的那个订单降低，以求平均
     if len(trading_state.pause_orders) > 0:
         logger.info(f"占位订单: {trading_state.pause_orders}")
-        pause_orders = dict(
-            sorted(
-                trading_state.pause_orders.items(),
-                key=lambda item: item[1],
-                reverse=True,
-            )
+        order_id, order_info = max(
+            trading_state.pause_orders.items(),
+            key=lambda item: item[1]['amount']
         )
-        order_id, max_price = list(pause_orders.items())[0]
+        max_price = order_info['price']
         success = await trading_state.grid_trading.modify_grid_order(
             order_id=order_id,
             new_price=max_price,
             new_amount=round(trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"], 6),
         )
         if success:
-            trading_state.pause_positions[max_price] = trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"]
+            trading_state.pause_positions[max_price] -= GRID_CONFIG["GRID_AMOUNT"]
             logger.info(
                 f"降低占位订单交易数量成功，订单ID: {order_id}, 新数量: {trading_state.pause_positions[max_price]}"
             )
@@ -503,30 +504,29 @@ async def _buy_side_replenish_sell_order():
     """
     global trading_state
 
-    buy_orders_prices = sorted(list(trading_state.buy_orders.values()))
 
-    high_buy_price = (
-        trading_state.current_price - trading_state.active_grid_signle_price
-    )
-    if len(buy_orders_prices) > 0:
-        high_buy_price = buy_orders_prices[-1]
-
-    new_sell_price = round(
-        high_buy_price + trading_state.active_grid_signle_price * 2, 2
+    low_sell_price = (
+        trading_state.current_price + trading_state.base_grid_single_price * 2
     )
     if len(trading_state.sell_orders) > 0:
-        new_sell_price = (
-            min(trading_state.sell_orders.values())
-            - trading_state.active_grid_signle_price
-        )
+        low_sell_price = min(trading_state.sell_orders.values())
+    high_buy_price = (
+        trading_state.current_price - trading_state.base_grid_single_price
+    )
+    if len(trading_state.buy_orders) > 0:
+        high_buy_price = max(trading_state.buy_orders.values())
+
+    new_sell_price = round(
+        low_sell_price - trading_state.base_grid_single_price, 2
+    )
 
     # 补单价格离当前价格过远，调整为最高买单价格上方2倍单网格价差
     if (
         new_sell_price - trading_state.current_price
-        > trading_state.active_grid_signle_price * 2
+        > trading_state.base_grid_single_price * 2
     ):
         new_sell_price = round(
-            high_buy_price + trading_state.active_grid_signle_price * 2, 2
+            high_buy_price + trading_state.active_grid_signle_price + trading_state.base_grid_single_price, 2
         )
 
     # 当前价格超过新补单价格时，不补单
@@ -824,7 +824,7 @@ async def check_current_orders():
             )
         )
         cancel_count = (
-            len(trading_state.sell_orders) - GRID_CONFIG["MAX_TOTAL_ORDERS"] / 2
+            len(trading_state.sell_orders) - GRID_CONFIG["MAX_TOTAL_ORDERS"] + 2
         )
         for order_id, price in sell_orders.items():
             if len(cancel_orders) < cancel_count:
@@ -898,33 +898,33 @@ async def check_current_orders():
         if len(cancel_orders) > 0:
             await _cancel_orders(cancel_orders)
 
-    # 如果订单中间距离过大，取消最远订单
-    if len(trading_state.sell_orders) > 0:
-        cancel_orders = []
-        # 正序排列
-        sell_orders = dict(
-            sorted(
-                trading_state.sell_orders.items(),
-                key=lambda item: item[1],
-            )
-        )
-        prev_price = None
-        faraway = False
-        for order_id, price in sell_orders.items():
-            if prev_price is not None and not faraway:
-                if price - prev_price > trading_state.active_grid_signle_price * 1.5:
-                    # 价格间距过大，取消所有大于此价格的订单
-                    cancel_orders.append(order_id)
-                    logger.info(
-                        f"检测到价格间距过大，删除订单ID={order_id}, 价格={price}"
-                    )
-                    faraway = True
-            if faraway:
-                cancel_orders.append(order_id)
-            prev_price = price
+    # # 如果订单中间距离过大，取消最远订单
+    # if len(trading_state.sell_orders) > 0:
+    #     cancel_orders = []
+    #     # 正序排列
+    #     sell_orders = dict(
+    #         sorted(
+    #             trading_state.sell_orders.items(),
+    #             key=lambda item: item[1],
+    #         )
+    #     )
+    #     prev_price = None
+    #     faraway = False
+    #     for order_id, price in sell_orders.items():
+    #         if prev_price is not None and not faraway:
+    #             if price - prev_price > trading_state.active_grid_signle_price * 1.5:
+    #                 # 价格间距过大，取消所有大于此价格的订单
+    #                 cancel_orders.append(order_id)
+    #                 logger.info(
+    #                     f"检测到价格间距过大，删除订单ID={order_id}, 价格={price}"
+    #                 )
+    #                 faraway = True
+    #         if faraway:
+    #             cancel_orders.append(order_id)
+    #         prev_price = price
 
-        if len(cancel_orders) > 0:
-            await _cancel_orders(cancel_orders)
+    #     if len(cancel_orders) > 0:
+    #         await _cancel_orders(cancel_orders)
 
     # 当前仓位 + 同方向订单，需要小于最大仓位限制
     if trading_state.available_position_size > GRID_CONFIG["ALER_POSITION"] / 2:
@@ -1020,7 +1020,7 @@ async def _sync_current_orders():
         if initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
             # 非网格订单，记录为熔断占位订单
             trading_state.pause_positions[price] = initial_base_amount
-            trading_state.pause_orders[order_id] = price
+            trading_state.pause_orders[order_id] = {'price': price, 'amount': initial_base_amount}
             continue
         
         if is_ask:

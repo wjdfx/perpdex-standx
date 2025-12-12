@@ -22,3 +22,10 @@ API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY', '')
 # 日志配置
 LOG_LEVEL = os.getenv('LOG_LEVEL', "INFO")
 LOG_FORMAT = os.getenv('LOG_FORMAT', "")
+
+# PostgreSQL 配置
+POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
+POSTGRES_PORT = int(os.getenv('POSTGRES_PORT', 5432))
+POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'yourpassword')
+POSTGRES_DB = os.getenv('POSTGRES_DB', 'mydb')
