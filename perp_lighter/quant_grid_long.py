@@ -1244,7 +1244,7 @@ async def _save_pause_position():
             low_order_price = round(trading_state.last_trade_price + position_price_range / 2, 2)
             low_order_position = trading_state.available_position_size
             if low_order_position > GRID_CONFIG["GRID_AMOUNT"] * 4:
-                low_order_position = round(trading_state.available_position_size / 2)
+                low_order_position = round(trading_state.available_position_size / 2, 2)
                 
                 remaining_order_position = trading_state.available_position_size - low_order_position
                 remaining_order_price = round(trading_state.last_trade_price + position_price_range / 3 * 2, 2)
