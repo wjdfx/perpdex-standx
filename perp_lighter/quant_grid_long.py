@@ -34,7 +34,7 @@ GRID_CONFIG = {
     "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
     "MAX_POSITION": 0.8,  # 最大仓位限制
     "DECREASE_POSITION": 0.35,  # 降低仓位触发点
-    "ALER_POSITION": 0.2,  # 警告仓位限制
+    "ALER_POSITION": 0.3,  # 警告仓位限制
     "MARKET_ID": 0,  # 市场ID
     "ATR_THRESHOLD": 7,  # ATR波动阈值
 }
