@@ -365,12 +365,7 @@ async def check_position_limits(positions: dict):
             # logger.warning(
             #     f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
             # )
-            if sign > 0:
-                # 多头仓位
-                trading_state.grid_buy_spread_alert = True
-            else:
-                # 空头仓位
-                trading_state.grid_sell_spread_alert = True
+            trading_state.grid_buy_spread_alert = True
 
             # logger.info("当前处于警告价差状态，补单间距加倍")
             # trading_state.base_grid_single_price = (
@@ -926,54 +921,54 @@ async def check_current_orders():
     #     if len(cancel_orders) > 0:
     #         await _cancel_orders(cancel_orders)
 
-    # 当前仓位 + 同方向订单，需要小于最大仓位限制
-    if trading_state.available_position_size > GRID_CONFIG["ALER_POSITION"] / 2:
-        if trading_state.current_position_sign > 0:
-            # 多头仓位
-            if len(trading_state.buy_orders) > GRID_CONFIG["GRID_COUNT"]:
-                logger.info("当前多头仓位较大，取消部分买单订单以降低仓位")
-                cancel_orders = []
-                # 取消最远的买单订单
-                buy_orders = dict(
-                    sorted(trading_state.buy_orders.items(), key=lambda item: item[1])
-                )
-                cancel_count = len(trading_state.buy_orders) - GRID_CONFIG["GRID_COUNT"]
-                for order_id, price in buy_orders.items():
-                    if len(cancel_orders) < cancel_count:
-                        cancel_orders.append(order_id)
-                        logger.info(
-                            f"取消最远买单订单，价格={price}, 订单ID={order_id}"
-                        )
-                    else:
-                        break
+    # # 当前仓位 + 同方向订单，需要小于最大仓位限制
+    # if trading_state.available_position_size > GRID_CONFIG["ALER_POSITION"] / 2:
+    #     if trading_state.current_position_sign > 0:
+    #         # 多头仓位
+    #         if len(trading_state.buy_orders) > GRID_CONFIG["GRID_COUNT"]:
+    #             logger.info("当前多头仓位较大，取消部分买单订单以降低仓位")
+    #             cancel_orders = []
+    #             # 取消最远的买单订单
+    #             buy_orders = dict(
+    #                 sorted(trading_state.buy_orders.items(), key=lambda item: item[1])
+    #             )
+    #             cancel_count = len(trading_state.buy_orders) - GRID_CONFIG["GRID_COUNT"]
+    #             for order_id, price in buy_orders.items():
+    #                 if len(cancel_orders) < cancel_count:
+    #                     cancel_orders.append(order_id)
+    #                     logger.info(
+    #                         f"取消最远买单订单，价格={price}, 订单ID={order_id}"
+    #                     )
+    #                 else:
+    #                     break
 
-                await _cancel_orders(cancel_orders)
-        elif trading_state.current_position_sign < 0:
-            # 空头仓位
-            if len(trading_state.sell_orders) > GRID_CONFIG["GRID_COUNT"]:
-                logger.info("当前空头仓位较大，取消部分卖单订单以降低仓位")
-                cancel_orders = []
-                # 取消最远的卖单订单
-                sell_orders = dict(
-                    sorted(
-                        trading_state.sell_orders.items(),
-                        key=lambda item: item[1],
-                        reverse=True,
-                    )
-                )
-                cancel_count = (
-                    len(trading_state.sell_orders) - GRID_CONFIG["GRID_COUNT"]
-                )
-                for order_id, price in sell_orders.items():
-                    if len(cancel_orders) < cancel_count:
-                        cancel_orders.append(order_id)
-                        logger.info(
-                            f"取消最远卖单订单，价格={price}, 订单ID={order_id}"
-                        )
-                    else:
-                        break
+    #             await _cancel_orders(cancel_orders)
+    #     elif trading_state.current_position_sign < 0:
+    #         # 空头仓位
+    #         if len(trading_state.sell_orders) > GRID_CONFIG["GRID_COUNT"]:
+    #             logger.info("当前空头仓位较大，取消部分卖单订单以降低仓位")
+    #             cancel_orders = []
+    #             # 取消最远的卖单订单
+    #             sell_orders = dict(
+    #                 sorted(
+    #                     trading_state.sell_orders.items(),
+    #                     key=lambda item: item[1],
+    #                     reverse=True,
+    #                 )
+    #             )
+    #             cancel_count = (
+    #                 len(trading_state.sell_orders) - GRID_CONFIG["GRID_COUNT"]
+    #             )
+    #             for order_id, price in sell_orders.items():
+    #                 if len(cancel_orders) < cancel_count:
+    #                     cancel_orders.append(order_id)
+    #                     logger.info(
+    #                         f"取消最远卖单订单，价格={price}, 订单ID={order_id}"
+    #                     )
+    #                 else:
+    #                     break
 
-                await _cancel_orders(cancel_orders)
+    #             await _cancel_orders(cancel_orders)
 
     # 同步订单状态
     await _sync_current_orders()
@@ -1223,23 +1218,41 @@ async def _save_pause_position():
     global trading_state
 
     try:
+        orders = []
         # 仓位形成距离
         position_price_range = trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.base_grid_single_price
         
         # 成本价理论上是最后价格 + 距离差价/2，占位订单价格设置在成本价上方一些，追求微盈利
         if trading_state.last_trade_price > 0:
-            order_price = round(trading_state.last_trade_price + position_price_range / 3 * 2, 2)
-            success, order_id = await trading_state.grid_trading.place_single_order(
-                is_ask=True,
-                price=order_price,
-                amount=trading_state.available_position_size,
-            )
+            # 为使订单过于集中，需要平均分配占位订单，以做到平滑过渡，成本线订单为最低价格订单，可以占用分配订单中的一半仓位
+            # 剩下一半按照仓位量均分在上方若干单,最高不超三分之二处，以求尽快降低仓位
+            low_order_price = round(trading_state.last_trade_price + position_price_range / 2, 2)
+            low_order_position = trading_state.available_position_size
+            if low_order_position > GRID_CONFIG["GRID_AMOUNT"] * 4:
+                low_order_position = round(trading_state.available_position_size / 2)
+                
+                remaining_order_position = trading_state.available_position_size - low_order_position
+                remaining_order_price = round(trading_state.last_trade_price + position_price_range / 3 * 2, 2)
+                remainin_prder = (True, remaining_order_price, remaining_order_position)
+                orders.append(remainin_prder)
+                
+            low_order = (True, low_order_price, low_order_position)
+            orders.append(low_order)
+            success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
             if success:
                 trading_state.pause_position_exist = True
                 trading_state.available_position_size = 0.0
+                for idx, oid in enumerate(order_ids):
+                    is_ask, price, _ = orders[idx]
+                    if is_ask:
+                        trading_state.sell_orders[oid] = price
+                    else:
+                        trading_state.buy_orders[oid] = price
                 logger.info(
-                    f"占位订单创建成功: 价格={order_price}, 订单ID={order_id}"
+                    f"占位订单创建成功: {[( '买单' if not is_ask else '卖单', price) for is_ask, price, _ in orders]}, 订单ID={order_ids}"
                 )
+            else:
+                logger.error("占位订单创建失败")
     except Exception as e:
         logger.exception(f"创建占位订单失败: {e}")
         
@@ -1416,9 +1429,9 @@ async def run_grid_trading():
                         min_step, min(raw_step, max_step)
                     )
                 else:
-                    trading_state.active_grid_signle_price = (
-                        trading_state.base_grid_single_price
-                    )
+                    trading_state.active_grid_signle_price = trading_state.base_grid_single_price
+                    if trading_state.grid_buy_spread_alert:
+                        trading_state.active_grid_signle_price = trading_state.base_grid_single_price * 2
 
                 # 每60秒执行一次（10秒 * 6 = 60秒）
                 if counter % 6 == 0:
