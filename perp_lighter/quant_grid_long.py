@@ -1062,6 +1062,15 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         trading_state.current_position_size = abs(float(position_size))
         trading_state.current_position_sign = int(position.sign)
         await check_position_limits(trading_state.current_position_size)
+        
+        # 记录最后一单成交价格
+        trades = await grid_trading.get_trades_by_rest(0, 1)
+        if len(trades) > 0:
+            last_trade = trades[0]
+            trading_state.last_trade_price = float(last_trade.price)
+            logger.info(
+                f"上次成交价格: {trading_state.last_trade_price}"
+            )
 
         # 等待获取当前价格
         max_wait = 10
