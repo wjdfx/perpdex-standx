@@ -374,6 +374,7 @@ async def check_position_limits(positions: dict):
             # ) * 2
             trading_state.grid_decrease_status = False
         elif position_size >= decrease_position:
+            trading_state.grid_buy_spread_alert = True
             trading_state.grid_decrease_status = True
         else:
             trading_state.grid_buy_spread_alert = False
