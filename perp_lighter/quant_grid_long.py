@@ -145,8 +145,7 @@ async def on_account_all_positions_update(account_id: str, positions: dict):
     if len(trading_state.original_buy_prices) == 0:
         logger.info("等待初始化完成...")
         return
-    if len(positions.items()) > 0:
-        position = positions.items()[GRID_CONFIG["MARKET_ID"]]
+    for market_id, position in positions.items():
         position_size = round(abs(float(position.get("position", 0))), 2)
         await check_position_limits(position_size)
 
