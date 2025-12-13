@@ -1248,12 +1248,6 @@ async def _save_pause_position():
             if success:
                 trading_state.pause_position_exist = True
                 trading_state.available_position_size = 0.0
-                for idx, oid in enumerate(order_ids):
-                    is_ask, price, _ = orders[idx]
-                    if is_ask:
-                        trading_state.sell_orders[oid] = price
-                    else:
-                        trading_state.buy_orders[oid] = price
                 logger.info(
                     f"占位订单创建成功: {[( '买单' if not is_ask else '卖单', price) for is_ask, price, _ in orders]}, 订单ID={order_ids}"
                 )
