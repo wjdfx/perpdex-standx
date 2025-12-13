@@ -1253,7 +1253,7 @@ async def _save_pause_position():
                     f"占位订单创建成功: {[( '买单' if not is_ask else '卖单', price) for is_ask, price, _ in orders]}, 订单ID={order_ids}"
                 )
             else:
-                logger.error("占位订单创建失败")
+                logger.error(f"占位订单创建失败, {orders}")
     except Exception as e:
         logger.exception(f"创建占位订单失败: {e}")
         
