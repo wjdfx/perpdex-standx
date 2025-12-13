@@ -1081,8 +1081,6 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         grid_count = GRID_CONFIG["GRID_COUNT"]
         grid_amount = GRID_CONFIG["GRID_AMOUNT"]
         grid_spread = GRID_CONFIG["GRID_SPREAD"]
-        if trading_state.grid_buy_spread_alert:
-            grid_spread *= 2
 
         logger.info(f"🚀 初始化网格交易: 基准价格=${base_price}, 网格数量={grid_count}")
         trading_state.open_price = base_price
@@ -1096,8 +1094,11 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
             await check_current_orders()
         else:
             if not trading_state.grid_pause:
+                place_grid_spread = grid_spread
+                if trading_state.grid_buy_spread_alert:
+                    place_grid_spread *= 2
                 success = await grid_trading.place_grid_orders(
-                    1, base_price, grid_count, grid_amount, grid_spread
+                    1, base_price, grid_count, grid_amount, place_grid_spread
                 )
 
 
