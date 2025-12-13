@@ -142,7 +142,13 @@ async def on_account_all_positions_update(account_id: str, positions: dict):
         return
 
     # 检查仓位是否超出限制
-    await check_position_limits(positions)
+    if len(trading_state.original_buy_prices) == 0:
+        logger.info("等待初始化完成...")
+        return
+    if len(positions.items()) > 0:
+        position = positions[GRID_CONFIG["MARKET_ID"]]
+        position_size = round(abs(float(position.get("position", 0))), 2)
+        await check_position_limits(position_size)
 
 
 #######################################################
@@ -337,61 +343,57 @@ def calculate_grid_prices(
     return buy_prices
 
 
-async def check_position_limits(positions: dict):
+async def check_position_limits(position_size: float):
     """
     检查仓位是否超出限制
     """
     global trading_state
 
-    if len(trading_state.original_buy_prices) == 0:
-        logger.info("等待初始化完成...")
+    trading_state.current_position_size = position_size
+    current_pause_position = await _get_current_pause_position()
+    trading_state.available_position_size = round(trading_state.current_position_size - current_pause_position, 2)
+    logger.info(
+        f"📊 当前仓位: {position_size}, 冻结仓位: {current_pause_position}, 可用仓位: {trading_state.available_position_size}, 清算价格: {position.liquidation_price}"
+    )
+    
+    alert_pos = GRID_CONFIG["ALER_POSITION"]
+    decrease_position = GRID_CONFIG["DECREASE_POSITION"]
+    # direction = "多头" if sign > 0 else "空头"
+    # logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
+    if position_size == 0:
         return
+    # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
+    if position_size >= alert_pos and position_size < decrease_position:
+        # logger.warning(
+        #     f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
+        # )
+        trading_state.grid_buy_spread_alert = True
 
-    for market_id, position in positions.items():
-        position_size = round(abs(float(position.get("position", 0))), 2)
-        trading_state.current_position_size = position_size
-        current_pause_position = await _get_current_pause_position()
-        trading_state.available_position_size = round(trading_state.current_position_size - current_pause_position, 2)
-        
-        sign = int(position.get("sign", "0"))
-        alert_pos = GRID_CONFIG["ALER_POSITION"]
-        decrease_position = GRID_CONFIG["DECREASE_POSITION"]
-        # direction = "多头" if sign > 0 else "空头"
-        # logger.info(f"📊 当前仓位: {position_size}, 方向: {direction}")
-        if position_size == 0:
-            return
-        # 当仓位到了警戒线时，触发挂单倾斜，将单边挂单网格距离增大
-        if position_size >= alert_pos and position_size < decrease_position:
-            # logger.warning(
-            #     f"⚠️ 警告：仓位接近限制，已触发挂单倾斜: 市场={market_id}, 当前={position_size}, 警告={alert_pos}"
-            # )
-            trading_state.grid_buy_spread_alert = True
+        # logger.info("当前处于警告价差状态，补单间距加倍")
+        # trading_state.base_grid_single_price = (
+        #     trading_state.original_buy_prices[1]
+        #     - trading_state.original_buy_prices[0]
+        # ) * 2
+        trading_state.grid_decrease_status = False
+    elif position_size >= decrease_position:
+        trading_state.grid_buy_spread_alert = True
+        trading_state.grid_decrease_status = True
+    else:
+        trading_state.grid_buy_spread_alert = False
+        trading_state.grid_sell_spread_alert = False
+        trading_state.base_grid_single_price = (
+            trading_state.original_buy_prices[1]
+            - trading_state.original_buy_prices[0]
+        )
+        trading_state.grid_decrease_status = False
 
-            # logger.info("当前处于警告价差状态，补单间距加倍")
-            # trading_state.base_grid_single_price = (
-            #     trading_state.original_buy_prices[1]
-            #     - trading_state.original_buy_prices[0]
-            # ) * 2
-            trading_state.grid_decrease_status = False
-        elif position_size >= decrease_position:
-            trading_state.grid_buy_spread_alert = True
-            trading_state.grid_decrease_status = True
-        else:
-            trading_state.grid_buy_spread_alert = False
-            trading_state.grid_sell_spread_alert = False
-            trading_state.base_grid_single_price = (
-                trading_state.original_buy_prices[1]
-                - trading_state.original_buy_prices[0]
-            )
-            trading_state.grid_decrease_status = False
-
-        max_pos = GRID_CONFIG["MAX_POSITION"]
-        if position_size > max_pos:
-            logger.warning(
-                f"⚠️ 仓位超出限制: 市场={market_id}, 当前={position_size}, 限制={max_pos}"
-            )
-            # 网格交易暂停
-            trading_state.grid_pause = True
+    max_pos = GRID_CONFIG["MAX_POSITION"]
+    if position_size > max_pos:
+        logger.warning(
+            f"⚠️ 仓位超出限制: 当前={position_size}, 限制={max_pos}"
+        )
+        # 网格交易暂停
+        trading_state.grid_pause = True
 
 
 async def replenish_grid(filled_signal: bool):
@@ -1060,6 +1062,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         position_size = position.position
         trading_state.current_position_size = abs(float(position_size))
         trading_state.current_position_sign = int(position.sign)
+        await check_position_limits(trading_state.current_position_size)
 
         # 等待获取当前价格
         max_wait = 10
@@ -1370,11 +1373,7 @@ async def run_grid_trading():
                 trading_state.current_position_size = round(abs(float(position_size)), 2)
                 trading_state.current_position_sign = int(position.sign)
                 if position_size is not None:
-                    current_pause_position = await _get_current_pause_position()
-                    trading_state.available_position_size = round(trading_state.current_position_size - current_pause_position, 2)
-                    logger.info(
-                        f"📊 当前仓位: {position_size}, 冻结仓位: {current_pause_position}, 可用仓位: {trading_state.available_position_size}, 清算价格: {position.liquidation_price}"
-                    )
+                    await check_position_limits(trading_state.current_position_size)
 
                 unrealized_pnl = float(position.unrealized_pnl)
 
