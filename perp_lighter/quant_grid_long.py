@@ -353,7 +353,7 @@ async def check_position_limits(position_size: float):
     current_pause_position = await _get_current_pause_position()
     trading_state.available_position_size = round(trading_state.current_position_size - current_pause_position, 2)
     logger.info(
-        f"📊 当前仓位: {position_size}, 冻结仓位: {current_pause_position}, 可用仓位: {trading_state.available_position_size}, 清算价格: {position.liquidation_price}"
+        f"📊 当前仓位: {position_size}, 冻结仓位: {current_pause_position}, 可用仓位: {trading_state.available_position_size}"
     )
     
     alert_pos = GRID_CONFIG["ALER_POSITION"]
