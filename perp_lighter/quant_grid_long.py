@@ -1239,7 +1239,7 @@ async def _save_pause_position():
     try:
         orders = []
         # 仓位形成距离
-        position_price_range = trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.base_grid_single_price
+        position_price_range = trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.active_grid_signle_price
         
         # 成本价理论上是最后价格 + 距离差价/2，占位订单价格设置在成本价上方一些，追求微盈利
         if trading_state.last_trade_price > 0:
