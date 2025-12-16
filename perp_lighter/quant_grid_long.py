@@ -312,7 +312,7 @@ async def check_order_fills(orders: dict):
 
                     # 补充网格订单
                     if replenish:
-                        await replenish_grid(True)
+                        await replenish_grid(True, float(price))
                         trading_state.last_replenish_time = time.time()
 
 
@@ -395,7 +395,7 @@ async def check_position_limits(position_size: float):
         trading_state.grid_pause = True
 
 
-async def replenish_grid(filled_signal: bool):
+async def replenish_grid(filled_signal: bool, trade_price: float = 0.0):
     """
     补充网格订单逻辑
     基于原始订单价格分布和当前价格，计算补充订单的价格和方向
@@ -418,9 +418,9 @@ async def replenish_grid(filled_signal: bool):
     try:
         if filled_signal:
             # 买单侧被吃单
-            await _buy_side_filled_order()
+            await _buy_side_filled_order(trade_price)
             # 卖单侧被吃单
-            await _sell_side_filled_order()
+            await _sell_side_filled_order(trade_price)
 
         # 大间距补单
         await _over_range_replenish_order()
@@ -433,7 +433,7 @@ async def replenish_grid(filled_signal: bool):
         logger.exception(f"补充网格订单时发生错误")
 
 
-async def _buy_side_filled_order():
+async def _buy_side_filled_order(trade_price: float = 0.0):
     """
     买单侧被吃单到需要补单时
     """
@@ -454,7 +454,7 @@ async def _buy_side_filled_order():
             orders.append(buy_order)
 
     # 买单侧被吃单补充卖单
-    sell_order = await _buy_side_replenish_sell_order()
+    sell_order = await _buy_side_replenish_sell_order(trade_price)
     if sell_order:
         orders.append(sell_order)
 
@@ -495,7 +495,7 @@ async def _buy_side_replenish_buy_order():
     return (False, new_buy_price, amount)
 
 
-async def _buy_side_replenish_sell_order():
+async def _buy_side_replenish_sell_order(trade_price: float = 0.0):
     """
     买单侧被吃单到补充卖单 - 返回订单数据
     """
@@ -516,6 +516,10 @@ async def _buy_side_replenish_sell_order():
     new_sell_price = round(
         low_sell_price - trading_state.base_grid_single_price, 2
     )
+    if trade_price > 0:
+        new_sell_price = round(
+            trade_price + trading_state.base_grid_single_price, 2
+        )
 
     # 补单价格离当前价格过远，调整为最高买单价格上方2倍单网格价差
     if (
@@ -534,7 +538,7 @@ async def _buy_side_replenish_sell_order():
     return None
 
 
-async def _sell_side_filled_order():
+async def _sell_side_filled_order(trade_price: float = 0.0):
     """
     卖单侧被吃单到需要补单时
     """
