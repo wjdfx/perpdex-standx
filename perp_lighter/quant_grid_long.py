@@ -1247,7 +1247,7 @@ async def _save_pause_position():
                 low_order_position = round(trading_state.available_position_size / 2, 2)
                 
                 remaining_order_position = trading_state.available_position_size - low_order_position
-                remaining_order_price = round(trading_state.last_trade_price + position_price_range / 3 * 2, 2)
+                remaining_order_price = round(trading_state.last_trade_price + position_price_range / 4 * 3, 2)
                 remainin_prder = (True, remaining_order_price, remaining_order_position)
                 orders.append(remainin_prder)
                 
