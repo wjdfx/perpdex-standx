@@ -699,6 +699,8 @@ class UnifiedWebSocketClient:
         try:
             # 调用回调函数
             # logger.info(f"generic message: {message}")
+            if message['info']:
+                logger.error(f"generic message: {message}")
             self.on_generic_message_update(message)
         except Exception as e:
             logger.exception(f"Error handling generic message: {e}")
