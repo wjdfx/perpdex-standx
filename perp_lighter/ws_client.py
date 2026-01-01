@@ -699,7 +699,7 @@ class UnifiedWebSocketClient:
         try:
             # 调用回调函数
             # logger.info(f"generic message: {message}")
-            if message['error']:
+            if message.get('error'):
                 logger.error(f"generic message: {message}")
             self.on_generic_message_update(message)
         except Exception as e:

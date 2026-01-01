@@ -3,6 +3,7 @@ import logging
 import time
 import lighter
 import pandas as pd
+import aiohttp
 from typing import Any, Dict, List, Tuple, Optional
 from . import quota
 from .ws_client import UnifiedWebSocketClient
@@ -551,43 +552,41 @@ class GridTrading:
         end_time = int(time.time())
         start_time = end_time - resolution_seconds * count_back
         
-        candle_api = lighter.CandlestickApi()
-        
         try:
-            resp = await candle_api.candlesticks(
-                market_id=market_id,
-                start_timestamp=start_time,
-                end_timestamp=end_time,
-                count_back=count_back,
-                resolution=resolution,
-            )
-            if resp.code != CODE_OK:
-                print(f"获取K线数据失败: {resp.message}")
-                return None
-
-            # 将K线数据转换为DataFrame
-            candle_data = []
-            for candle in resp.candlesticks:
-                candle_data.append(
-                    {
-                        "time": candle.timestamp,
-                        "open": candle.open,
-                        "high": candle.high,
-                        "low": candle.low,
-                        "close": candle.close,
-                        "volume": candle.volume0,
-                    }
-                )
-
-            df = pd.DataFrame(candle_data)
-
-            # 将时间戳转换为可读格式（毫秒值）
-            df["time"] = pd.to_datetime(df["time"], unit="ms")
+            url = f"{BASE_URL}/api/v1/candles"
+            params = {
+                "market_id": market_id,
+                "resolution": resolution,
+                "start_timestamp": start_time,
+                "end_timestamp": end_time,
+                "count_back": count_back,
+            }
+            headers = {"accept": "application/json"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers) as resp:
+                    data = await resp.json()
+                    if data.get("code") != 200:
+                        logger.error(f"获取K线数据失败: {data.get('message', 'Unknown error')}")
+                        return None
+                    candlesticks = data["c"]
+                    candle_data = []
+                    for candle in candlesticks:
+                        candle_data.append(
+                            {
+                                "time": candle["t"],
+                                "open": candle["o"],
+                                "high": candle["h"],
+                                "low": candle["l"],
+                                "close": candle["c"],
+                                "volume": candle["v"],
+                            }
+                        )
+                    df = pd.DataFrame(candle_data)
+                    df["time"] = pd.to_datetime(df["time"], unit="ms")
+                    return df
         except Exception as e:
-            logger.error(f"通过REST请求K线数据时发生错误: {e}")
+            logger.error(f"通过HTTP请求K线数据时发生错误: {e}", exc_info=True)
             return None
-
-        return df
 
     async def is_yindie(
         self,
