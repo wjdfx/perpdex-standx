@@ -128,7 +128,8 @@ class GrvtAdapter(ExchangeInterface):
             client_order_id = int(time.time() * 1000) % 1000000
             side = 'sell' if is_ask else 'buy'
             params = {
-                "client_order_id": str(client_order_id)
+                "client_order_id" : str(client_order_id),
+                "post_only" : True,
             }
             response = await self.rest_client.create_limit_order(
                 symbol=self.symbol,
