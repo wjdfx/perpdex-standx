@@ -1,14 +1,13 @@
 import json
 import logging
 import time
-import lighter
 import pandas as pd
 import aiohttp
+import lighter
 from typing import Any, Dict, List, Tuple, Optional
 from . import quota
-from .ws_client import UnifiedWebSocketClient
 from common.config import BASE_URL
-from lighter.signer_client import CODE_OK
+from .exchanges.interfaces import ExchangeInterface
 
 
 logger = logging.getLogger(__name__)
@@ -19,22 +18,15 @@ class GridTrading:
     网格交易类，用于在基准价格周围创建网格订单
     """
 
-    def __init__(self, ws_client: UnifiedWebSocketClient, signer_client: lighter.SignerClient,
-                 account_index: int, api_key_index: int, market_id: int = 0):
+    def __init__(self, exchange: ExchangeInterface, market_id: int = 0):
         """
         初始化网格交易类
 
         Args:
-            ws_client: WebSocket客户端实例
-            signer_client: 签名客户端实例
-            account_index: 账户索引
-            api_key_index: API密钥索引
+            exchange: 交易所适配器实例
             market_id: 市场ID，默认为0
         """
-        self.ws_client = ws_client
-        self.signer_client = signer_client
-        self.account_index = account_index
-        self.api_key_index = api_key_index
+        self.exchange = exchange
         self.market_id = market_id
 
         # 价格和数量乘数（与quant.py保持一致）
@@ -49,14 +41,7 @@ class GridTrading:
             订单列表或None（如果获取失败）
         """
         try:
-            account_orders = self.ws_client.get_account_all_orders(self.account_index)
-            if account_orders is None:
-                logger.warning("无法获取当前账户的订单")
-                return None
-
-            logger.info(f"当前账户共有 {len(account_orders)} 个订单")
-            return account_orders
-
+            return self.exchange.get_orders()
         except Exception as e:
             logger.error(f"检查当前订单时发生错误: {e}")
             return None
@@ -107,8 +92,6 @@ class GridTrading:
         Returns:
             bool: 是否成功放置所有订单
         """
-        
-        transaction_api = lighter.TransactionApi()
             
         try:
             # 生成网格订单
@@ -119,45 +102,7 @@ class GridTrading:
                         f"网格数量={grid_count}, 单网格量={grid_amount}, 价差={grid_spread}%")
             logger.info(f"订单详情: {[(f'卖单' if is_ask else '买单', price, amount) for is_ask, price, amount in orders]}")
 
-            
-            next_nonce = await transaction_api.next_nonce(
-                account_index=self.account_index, api_key_index=self.api_key_index
-            )
-            nonce_value = next_nonce.nonce
-
-            # 准备交易信息
-            tx_types = []
-            tx_infos = []
-            client_order_index = int(time.time() * 1000) % 1000000
-
-            for is_ask, price, amount in orders:
-                # 签名订单
-                tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
-                    market_index=self.market_id,
-                    client_order_index=client_order_index,
-                    base_amount=int(amount * self.base_amount_multiplier),
-                    price=int(price * self.price_multiplier),
-                    is_ask=is_ask,
-                    order_type=self.signer_client.ORDER_TYPE_LIMIT,  # 限价单
-                    time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,  # GTC
-                    reduce_only=False,
-                    trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
-                    nonce=nonce_value,
-                )
-
-                if error is not None:
-                    logger.error(f"签名订单失败 (价格={price}, 数量={amount}): {error}")
-                    return False
-
-                # 累积交易类型和信息到列表中
-                tx_types.append(tx_type)
-                tx_infos.append(tx_info)
-
-                client_order_index += 1
-                nonce_value += 1
-
-            # 发送批量交易
-            success = await self.ws_client.send_batch_tx_async(tx_types, tx_infos)
+            success, _ = await self.exchange.place_multi_orders(orders)
 
             if success:
                 logger.info(f"成功放置 {len(orders)} 个网格订单")
@@ -170,7 +115,7 @@ class GridTrading:
             logger.exception(f"放置网格订单时发生错误: {e}")
             return False
         
-    async def place_multi_orders(self, orders: List[Tuple[bool, float, float]]) -> Tuple[bool, List[int]]:
+    async def place_multi_orders(self, orders: List[Tuple[bool, float, float]]) -> Tuple[bool, List[str]]:
         """
         放置多个订单
 
@@ -178,66 +123,12 @@ class GridTrading:
             orders: 订单列表，每个元素为 (is_ask, price, amount) 元组
 
         Returns:
-            Tuple[bool, List[int]]: (是否成功放置所有订单, 订单ID列表)
+            Tuple[bool, List[str]]: (是否成功放置所有订单, 订单ID列表)
         """
-        
-        transaction_api = lighter.TransactionApi()
-        order_ids = []
-            
-        try:
-            next_nonce = await transaction_api.next_nonce(
-                account_index=self.account_index, api_key_index=self.api_key_index
-            )
-            nonce_value = next_nonce.nonce
-
-            # 准备交易信息
-            tx_types = []
-            tx_infos = []
-            client_order_index = int(time.time() * 1000) % 1000000
-
-            for is_ask, price, amount in orders:
-                # 签名订单
-                tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
-                    market_index=self.market_id,
-                    client_order_index=client_order_index,
-                    base_amount=int(amount * self.base_amount_multiplier),
-                    price=int(price * self.price_multiplier),
-                    is_ask=is_ask,
-                    order_type=self.signer_client.ORDER_TYPE_LIMIT,
-                    time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
-                    reduce_only=False,
-                    trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
-                    nonce=nonce_value,
-                )
-
-                if error is not None:
-                    logger.error(f"签名订单失败 (价格={price}, 数量={amount}): {error}")
-                    return False, []
-
-                # 累积交易类型和信息到列表中
-                tx_types.append(tx_type)
-                tx_infos.append(tx_info)
-                order_ids.append(client_order_index)
-
-                client_order_index += 1
-                nonce_value += 1
-
-            # 发送批量交易
-            success = await self.ws_client.send_batch_tx_async(tx_types, tx_infos)
-
-            if success:
-                logger.info(f"成功放置 {len(orders)} 个订单")
-                return True, order_ids
-            else:
-                logger.error("批量发送订单失败")
-                return False, []
-
-        except Exception as e:
-            logger.error(f"放置多个订单时发生错误: {e}")
-            return False, []
+        return await self.exchange.place_multi_orders(orders)
     
 
-    async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, Optional[int]]:
+    async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
         """
         放置单个订单
 
@@ -247,53 +138,11 @@ class GridTrading:
             amount: 数量
 
         Returns:
-            Tuple[bool, Optional[int]]: (是否成功放置订单, 订单ID)
+            Tuple[bool, str]: (是否成功放置订单, 订单ID)
         """
-        transaction_api = lighter.TransactionApi()
-        
-        try:
-            # 获取nonce
-            next_nonce = await transaction_api.next_nonce(
-                account_index=self.account_index, api_key_index=self.api_key_index
-            )
-            nonce_value = next_nonce.nonce
-
-            # 签名订单
-            order_id = int(time.time() * 1000) % 1000000
-            tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
-                market_index=self.market_id,
-                client_order_index=order_id,
-                base_amount=int(amount * self.base_amount_multiplier),
-                price=int(price * self.price_multiplier),
-                is_ask=is_ask,
-                order_type=self.signer_client.ORDER_TYPE_LIMIT,
-                time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
-                reduce_only=False,
-                trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
-                nonce=nonce_value,
-            )
-
-            if error is not None:
-                logger.error(f"签名订单失败 (价格={price}, 数量={amount}): {error}")
-                return False, None
-
-            # 发送交易
-            success = await self.ws_client.send_single_tx_async(
-                tx_type, tx_info
-            )
-
-            if success:
-                # logger.info(f"成功放置单个订单: {'卖单' if is_ask else '买单'} 价格={price}, 数量={amount}, 订单ID={order_id}")
-                return True, order_id
-            else:
-                logger.error("发送单个订单失败")
-                return False, None
-
-        except Exception as e:
-            logger.error(f"放置单个订单时发生错误: {e}")
-            return False, None
+        return await self.exchange.place_single_order(is_ask, price, amount)
             
-    async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, Optional[int]]:
+    async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
         """
         放置市价单
 
@@ -302,61 +151,11 @@ class GridTrading:
             amount: 数量
 
         Returns:
-            Tuple[bool, Optional[int]]: (是否成功放置订单, 订单ID)
+            Tuple[bool, str]: (是否成功放置订单, 订单ID)
         """
-        transaction_api = lighter.TransactionApi()
-        
-        try:
-            # 获取nonce
-            next_nonce = await transaction_api.next_nonce(
-                account_index=self.account_index, api_key_index=self.api_key_index
-            )
-            nonce_value = next_nonce.nonce
-            
-            slippage = 0.5  # 滑点百分比
-            
-            # 做空
-            if is_ask:
-                slippage = -slippage
+        return await self.exchange.place_single_market_order(is_ask, price, amount)
 
-            order_price = round(price * (1 + slippage / 100), 2)
-            
-            # 签名市价单
-            order_id = int(time.time() * 1000) % 1000000
-            tx_type, tx_info, tx_hash, error = self.signer_client.sign_create_order(
-                market_index=self.market_id,
-                client_order_index=order_id,
-                base_amount=int(amount * self.base_amount_multiplier),
-                price=int(order_price * self.price_multiplier),
-                is_ask=is_ask,
-                order_type=self.signer_client.ORDER_TYPE_MARKET,
-                time_in_force=self.signer_client.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL,
-                trigger_price=self.signer_client.NIL_TRIGGER_PRICE,
-                order_expiry=self.signer_client.DEFAULT_IOC_EXPIRY,
-                nonce=nonce_value,
-            )
-
-            if error is not None:
-                logger.error(f"签名市价单失败 (数量={amount}): {error}")
-                return False, None
-
-            # 发送交易
-            success = await self.ws_client.send_single_tx_async(
-                tx_type, tx_info
-            )
-
-            if success:
-                # logger.info(f"成功放置市价单: {'卖单' if is_ask else '买单'} 数量={amount}, 订单ID={order_id}")
-                return True, order_id
-            else:
-                logger.error("发送市价单失败")
-                return False, None
-
-        except Exception as e:
-            logger.error(f"放置市价单时发生错误: {e}")
-            return False, None
-
-    async def cancel_grid_orders(self, order_ids: List[int]) -> bool:
+    async def cancel_grid_orders(self, order_ids: List[str]) -> bool:
         """
         取消网格订单
 
@@ -366,49 +165,7 @@ class GridTrading:
         Returns:
             bool: 是否成功取消订单
         """
-        
-        transaction_api = lighter.TransactionApi()
-        
-        try:
-            next_nonce = await transaction_api.next_nonce(
-                account_index=self.account_index, api_key_index=self.api_key_index
-            )
-            nonce_value = next_nonce.nonce
-
-            # 准备交易信息
-            tx_types = []
-            tx_infos = []
-                
-            for order_id in order_ids:       
-                tx_type, tx_info, tx_hash, error = self.signer_client.sign_cancel_order(
-                    market_index=self.market_id,
-                    order_index=order_id,
-                    nonce=nonce_value,
-                )
-                
-                if error is not None:
-                    logger.error(f"签名取消订单失败 (订单ID={order_id}): {error}")
-                    return False
-
-                # 累积交易类型和信息到列表中
-                tx_types.append(tx_type)
-                tx_infos.append(tx_info)
-
-                nonce_value += 1
-                
-            # 发送批量交易
-            success = await self.ws_client.send_batch_tx_async(tx_types, tx_infos)
-
-            if success:
-                # logger.info(f"成功取消 {order_ids} 网格订单")
-                return True
-            else:
-                logger.error("批量发送网格订单失败")
-                return False
-                
-        except Exception as e:
-            logger.error(f"取消网格订单时发生错误: {e}")
-            return False
+        return await self.exchange.cancel_grid_orders(order_ids)
             
     async def modify_grid_order(self, order_id: int, new_price: float, new_amount: float) -> bool:
         """
@@ -422,102 +179,25 @@ class GridTrading:
         Returns:
             bool: 是否成功修改订单
         """
-        
-        transaction_api = lighter.TransactionApi()
-        
-        try:
-            next_nonce = await transaction_api.next_nonce(
-                account_index=self.account_index, api_key_index=self.api_key_index
-            )
-            nonce_value = next_nonce.nonce
-
-            # 签名修改订单
-            tx_type, tx_info, tx_hash, error = self.signer_client.sign_modify_order(
-                market_index=self.market_id,
-                order_index=order_id,
-                price=int(new_price * self.price_multiplier),
-                base_amount=int(new_amount * self.base_amount_multiplier),
-                nonce=nonce_value,
-            )
-
-            if error is not None:
-                logger.error(f"签名修改订单失败 (订单ID={order_id}): {error}")
-                return False
-
-            # 发送交易
-            success = await self.ws_client.send_single_tx_async(
-                tx_type, tx_info
-            )
-
-            if success:
-                # logger.info(f"成功修改订单: 订单ID={order_id}, 新价格={new_price}, 新数量={new_amount}")
-                return True
-            else:
-                logger.error("发送修改订单失败")
-                return False
-
-        except Exception as e:
-            logger.error(f"修改订单时发生错误: {e}")
-            return False
+        return await self.exchange.modify_order(order_id, new_price, new_amount)
             
-    async def get_orders_by_rest(self) -> List[lighter.Order]:
+    async def get_orders_by_rest(self) -> List[dict]:
         """
         通过REST API获取当前账户的所有订单
 
         Returns:
             订单列表或None（如果获取失败）
         """
-        
-        order_api = lighter.OrderApi()
-        
-        try:
-            # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
-            auth, err = self.signer_client.create_auth_token_with_expiry()
-            if err is not None:
-                logger.error(f"创建认证令牌失败: {auth}")
-                return
+        return await self.exchange.get_orders_by_rest()
             
-            orders = await order_api.account_active_orders(
-                account_index=self.account_index,
-                market_id=self.market_id,
-                auth=auth
-            )
-            return orders.orders
-               
-        except Exception as e:
-            logger.error(f"通过REST检查当前订单时发生错误: {e}")
-            return None
-            
-    async def get_trades_by_rest(self, ask_filter: int, limit: int) -> List[lighter.Trade]:
+    async def get_trades_by_rest(self, ask_filter: int, limit: int) -> List[dict]:
         """
         通过REST API获取当前账户的所有成交记录
 
         Returns:
             成交记录列表或None（如果获取失败）
         """
-        
-        order_api = lighter.OrderApi()
-        
-        try:
-            # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
-            auth, err = self.signer_client.create_auth_token_with_expiry()
-            if err is not None:
-                logger.error(f"创建认证令牌失败: {auth}")
-                return
-            
-            trades = await order_api.trades(
-                account_index=self.account_index,
-                market_id=self.market_id,
-                auth=auth,
-                sort_by="timestamp",
-                ask_filter=ask_filter,
-                limit=limit,
-            )
-            return trades.trades
-               
-        except Exception as e:
-            logger.error(f"通过REST检查当前成交记录时发生错误: {e}")
-            return None
+        return await self.exchange.get_trades_by_rest(ask_filter, limit)
 
     @staticmethod
     def _resolution_to_seconds(resolution: str) -> int:

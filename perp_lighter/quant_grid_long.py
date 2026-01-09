@@ -3,6 +3,7 @@ from common.config import (
     API_KEY_PRIVATE_KEY,
     ACCOUNT_INDEX,
     API_KEY_INDEX,
+    EXCHANGE_TYPE,
 )
 
 import logging
@@ -17,10 +18,10 @@ import asyncio
 import time
 import pandas as pd
 from typing import Dict, List, Optional, Set, Tuple
-import lighter
-from lighter.signer_client import CODE_OK
 from .ws_client import create_unified_client
 from .grid_matin import GridTrading
+from .exchanges import create_exchange_adapter
+from .exchanges.order_converter import normalize_order_to_ccxt, normalize_orders_list
 from collections import deque
 from typing import Deque
 from common.sqlite import init_db, insert
@@ -60,7 +61,7 @@ class GridTradingState:
         self.open_price: Optional[float] = None  # 启动时基准价格
         self.last_filled_order_is_ask: bool = True  # 上次成交订单方向
         self.last_replenish_time: float = 0  # 上次补单时间
-        self.last_trade_price: float= 0  # 上次成交价格
+        self.last_trade_price: float = 0  # 上次成交价格
         self.grid_pause: bool = False  # 网格交易暂停标志
         self.grid_sell_spread_alert: bool = False  # 卖单警告价差状态
         self.grid_buy_spread_alert: bool = False  # 买单警告价差状态
@@ -71,8 +72,12 @@ class GridTradingState:
         self.candle_stick_1m: pd.DataFrame = None  # 1分钟K线数据
         self.current_atr: float = 0.0  # 当前ATR值
         self.pause_positions: dict[float, float] = {}  # 熔断时的仓位映射, 价格->仓位
-        self.pause_orders: dict[str, dict[str, float]] = {}  # 占位订单ID到价格与数量的映射
-        self.pause_position_exist: bool = False  # 记录本次是否已经进行了熔断占位仓位下单
+        self.pause_orders: dict[str, dict[str, float]] = (
+            {}
+        )  # 占位订单ID到价格与数量的映射
+        self.pause_position_exist: bool = (
+            False  # 记录本次是否已经进行了熔断占位仓位下单
+        )
         self.available_position_size: float = 0.0  # 可用仓位
         self.active_profit: float = 0.0  # 动态网格收益
         self.total_profit: float = 0.0  # 本次运行总收益
@@ -123,11 +128,8 @@ async def on_account_all_orders_update(account_id: str, orders: dict):
     """
     global trading_state
 
-    if account_id != str(ACCOUNT_INDEX):
-        return
-
     # logger.info(
-    #     f"🔄 收到订单更新通知，订单数量: {sum(len(market_orders) for market_orders in orders.values())}"
+    #     f"🔄 收到订单更新通知: {orders}"
     # )
 
     # 检查是否有订单成交
@@ -138,15 +140,15 @@ async def on_account_all_positions_update(account_id: str, positions: dict):
     """
     处理账户所有仓位更新
     """
-    if account_id != str(ACCOUNT_INDEX):
-        return
 
     # 检查仓位是否超出限制
     if len(trading_state.original_buy_prices) == 0:
         logger.info("等待初始化完成...")
         return
     for market_id, position in positions.items():
-        position_size = round(abs(float(position.get("position", 0))), 2)
+        # Handle different field names for position
+        position_size = position.get("position", position.get("size", position.get("amount", 0)))
+        position_size = round(abs(float(position_size)), 2)
         await check_position_limits(position_size)
 
 
@@ -160,14 +162,18 @@ async def _cal_position_highest_amount_price() -> float:
     """
     global trading_state
 
-    target_price = trading_state.last_trade_price + trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.base_grid_single_price
+    target_price = (
+        trading_state.last_trade_price
+        + trading_state.available_position_size
+        / GRID_CONFIG["GRID_AMOUNT"]
+        * trading_state.base_grid_single_price
+    )
     if len(trading_state.pause_orders):
         order_id, order_info = max(
-            trading_state.pause_orders.items(),
-            key=lambda item: item[1]['amount']
+            trading_state.pause_orders.items(), key=lambda item: item[1]["amount"]
         )
-        target_price = order_info['price']
-        
+        target_price = order_info["price"]
+
     return round(target_price, 6)
 
 
@@ -176,7 +182,7 @@ async def _highest_order_lost() -> float:
     计算数量最大的的仓位浮亏
     """
     global trading_state
-    
+
     target_price = await _cal_position_highest_amount_price()
     lost = (target_price - trading_state.current_price) * GRID_CONFIG["GRID_AMOUNT"]
     return lost
@@ -190,7 +196,7 @@ async def _reduce_position():
 
     if not trading_state.grid_decrease_status:
         return
-    
+
     # 只允许此比例的收益用来减仓，以保留收益
     REDUCE_MULTIPLIER = 0.7
 
@@ -201,19 +207,20 @@ async def _reduce_position():
             f"当前可用减仓收益不够降低仓位, 需减仓网格浮亏: {highest_lost}, 当前可用减仓收益: {round(trading_state.available_reduce_profit, 2)}"
         )
         return
-    
+
     # 降低占位订单交易数量，对数量最大的那个订单降低，以求平均
     if len(trading_state.pause_orders) > 0:
         logger.info(f"占位订单: {trading_state.pause_orders}")
         order_id, order_info = max(
-            trading_state.pause_orders.items(),
-            key=lambda item: item[1]['amount']
+            trading_state.pause_orders.items(), key=lambda item: item[1]["amount"]
         )
-        max_price = order_info['price']
+        max_price = order_info["price"]
         success = await trading_state.grid_trading.modify_grid_order(
             order_id=order_id,
             new_price=max_price,
-            new_amount=round(trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"], 6),
+            new_amount=round(
+                trading_state.pause_positions[max_price] - GRID_CONFIG["GRID_AMOUNT"], 6
+            ),
         )
         if success:
             trading_state.pause_positions[max_price] -= GRID_CONFIG["GRID_AMOUNT"]
@@ -225,19 +232,21 @@ async def _reduce_position():
     await asyncio.sleep(0.5)
     # 降仓
     success, order_id = await trading_state.grid_trading.place_single_market_order(
-        is_ask=True, 
+        is_ask=True,
         price=trading_state.current_price,
-        amount=GRID_CONFIG["GRID_AMOUNT"]
+        amount=GRID_CONFIG["GRID_AMOUNT"],
     )
     if success:
         trading_state.active_profit = trading_state.active_profit - highest_lost
         # 为避免始终疲于降仓，以致总收益永远上不去，每次用来减仓的利润中，剩余部分不再用于之后的减仓
-        trading_state.available_reduce_profit = trading_state.available_reduce_profit - round(highest_lost / REDUCE_MULTIPLIER, 2)
+        trading_state.available_reduce_profit = (
+            trading_state.available_reduce_profit
+            - round(highest_lost / REDUCE_MULTIPLIER, 2)
+        )
         logger.info(
             f"降低仓位成功，当前价格: {trading_state.current_price}, 已平掉浮亏: {highest_lost}, 当前剩余动态收益: {round(trading_state.active_profit, 2)}"
         )
-        
-    
+
 
 #######################################################
 
@@ -248,72 +257,81 @@ async def check_order_fills(orders: dict):
     """
     global trading_state
 
-    for market_orders in orders.values():
-        for order in market_orders:
-            # order_id = order.get("order_id")
-            client_order_index = int(order.get("client_order_index"))
-            status = order.get("status")
-            is_ask = order.get("is_ask", "N/A")
-            price = order.get("price", "N/A")
-            filled_amount = float(order.get("filled_base_amount", 0))
-            initial_base_amount = float(order.get("initial_base_amount", 0))
-            
-            if initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
-                # 过滤非网格订单
-                continue
+    # logger.info(f"当前发现订单: {orders}")
+        
+    for order in orders:
+        # Extract fields from CCXT format
+        client_order_index = str(order.get("clientOrderId") or order.get("id", ""))
+        status = order.get("status")
+        side = order.get("side", "buy")  # 'buy' or 'sell'
+        price = order.get("price", 0)
+        filled_amount = float(order.get("filled", 0))
+        initial_base_amount = float(order.get("amount", 0))
+        
+        # Convert side to is_ask format for compatibility
+        is_ask = side == "sell"
 
-            logger.info(
-                f"检查订单: ID={client_order_index}, 方向={is_ask}, 价格={price}, 状态={status}, 成交量={filled_amount}"
-            )
+        if initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
+            # 过滤非网格订单
+            continue
 
-            async with replenish_grid_lock:
-                if status in ["open"]:
-                    if is_ask:
-                        trading_state.sell_orders[client_order_index] = float(price)
-                    else:
-                        trading_state.buy_orders[client_order_index] = float(price)
+        logger.info(
+            f"检查订单: ID={client_order_index}, 方向={side}, 价格={price}, 状态={status}, 成交量={filled_amount}"
+        )
 
-                # 如果订单已成交
-                if status in ["filled"] and filled_amount > 0:
-                    trading_state.filled_count += 1
-                    
-                    trading_state.last_trade_price = float(price)
+        async with replenish_grid_lock:
+            if status in ["open"]:
+                if is_ask:
+                    trading_state.sell_orders[client_order_index] = float(price)
+                else:
+                    trading_state.buy_orders[client_order_index] = float(price)
 
-                    # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
-                    replenish = False
-                    trading_state.last_filled_order_is_ask = is_ask
+            # 如果订单已成交
+            if status in ["closed", "filled"] and filled_amount > 0:
+                trading_state.filled_count += 1
 
-                    if is_ask:
-                        if client_order_index in trading_state.sell_orders:
-                            del trading_state.sell_orders[client_order_index]
-                            logger.info(
-                                f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}"
-                            )
-                            replenish = True
+                trading_state.last_trade_price = float(price)
 
-                            # 吃掉卖单时，由于仓位更新推送较慢，先将记录仓位提前降低，等待仓位更新后再调整可用仓位
-                            trading_state.available_position_size = round(
-                                trading_state.available_position_size - GRID_CONFIG["GRID_AMOUNT"], 2
-                            )
-                            
-                            # 收到卖单成交时，证明完成了一次网格套利，记录套利收益
-                            once_profit = trading_state.base_grid_single_price * GRID_CONFIG["GRID_AMOUNT"]
-                            trading_state.active_profit += once_profit
-                            trading_state.total_profit += once_profit
-                            trading_state.available_reduce_profit += once_profit
-                            
-                    else:
-                        if client_order_index in trading_state.buy_orders:
-                            del trading_state.buy_orders[client_order_index]
-                            logger.info(
-                                f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}"
-                            )
-                            replenish = True
+                # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
+                replenish = False
+                trading_state.last_filled_order_is_ask = is_ask
 
-                    # 补充网格订单
-                    if replenish:
-                        await replenish_grid(True, float(price))
-                        trading_state.last_replenish_time = time.time()
+                if is_ask:
+                    if client_order_index in trading_state.sell_orders:
+                        del trading_state.sell_orders[client_order_index]
+                        logger.info(
+                            f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}"
+                        )
+                        replenish = True
+
+                        # 吃掉卖单时，由于仓位更新推送较慢，先将记录仓位提前降低，等待仓位更新后再调整可用仓位
+                        trading_state.available_position_size = round(
+                            trading_state.available_position_size
+                            - GRID_CONFIG["GRID_AMOUNT"],
+                            2,
+                        )
+
+                        # 收到卖单成交时，证明完成了一次网格套利，记录套利收益
+                        once_profit = (
+                            trading_state.base_grid_single_price
+                            * GRID_CONFIG["GRID_AMOUNT"]
+                        )
+                        trading_state.active_profit += once_profit
+                        trading_state.total_profit += once_profit
+                        trading_state.available_reduce_profit += once_profit
+
+                else:
+                    if client_order_index in trading_state.buy_orders:
+                        del trading_state.buy_orders[client_order_index]
+                        logger.info(
+                            f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}"
+                        )
+                        replenish = True
+
+                # 补充网格订单
+                if replenish:
+                    await replenish_grid(True, float(price))
+                    trading_state.last_replenish_time = time.time()
 
 
 def calculate_grid_prices(
@@ -350,11 +368,13 @@ async def check_position_limits(position_size: float):
 
     trading_state.current_position_size = position_size
     current_pause_position = await _get_current_pause_position()
-    trading_state.available_position_size = round(trading_state.current_position_size - current_pause_position, 2)
+    trading_state.available_position_size = round(
+        trading_state.current_position_size - current_pause_position, 2
+    )
     logger.info(
         f"📊 当前仓位: {position_size}, 冻结仓位: {current_pause_position}, 可用仓位: {trading_state.available_position_size}"
     )
-    
+
     alert_pos = GRID_CONFIG["ALER_POSITION"]
     decrease_position = GRID_CONFIG["DECREASE_POSITION"]
     # direction = "多头" if sign > 0 else "空头"
@@ -380,17 +400,16 @@ async def check_position_limits(position_size: float):
     else:
         trading_state.grid_buy_spread_alert = False
         trading_state.grid_sell_spread_alert = False
-        trading_state.base_grid_single_price = (
-            trading_state.original_buy_prices[1]
-            - trading_state.original_buy_prices[0]
-        )
-        trading_state.grid_decrease_status = False
+        if len(trading_state.original_buy_prices) > 0:
+            trading_state.base_grid_single_price = (
+                trading_state.original_buy_prices[1]
+                - trading_state.original_buy_prices[0]
+            )
+            trading_state.grid_decrease_status = False
 
     max_pos = GRID_CONFIG["MAX_POSITION"]
     if position_size > max_pos:
-        logger.warning(
-            f"⚠️ 仓位超出限制: 当前={position_size}, 限制={max_pos}"
-        )
+        logger.warning(f"⚠️ 仓位超出限制: 当前={position_size}, 限制={max_pos}")
         # 网格交易暂停
         trading_state.grid_pause = True
 
@@ -404,7 +423,7 @@ async def replenish_grid(filled_signal: bool, trade_price: float = 0.0):
     global trading_state
 
     logger.info("🔄 检查并补充网格订单中...")
-    
+
     if trading_state.grid_pause:
         logger.info("网格交易处于暂停状态，跳过补单")
         return
@@ -457,6 +476,9 @@ async def _buy_side_filled_order(trade_price: float = 0.0):
     sell_order = await _buy_side_replenish_sell_order(trade_price)
     if sell_order:
         orders.append(sell_order)
+    else:
+        # 如果卖单不符合补单条件，取消本次双侧补单
+        return
 
     if orders:
         success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
@@ -480,17 +502,13 @@ async def _buy_side_replenish_buy_order():
     """
     global trading_state
 
-    low_buy_price = (
-        trading_state.current_price - trading_state.active_grid_signle_price
-    )
+    low_buy_price = trading_state.current_price - trading_state.active_grid_signle_price
     if len(trading_state.buy_orders) > 0:
         low_buy_price = min(trading_state.buy_orders.values())
 
     new_buy_price = round(low_buy_price - trading_state.active_grid_signle_price, 2)
     while new_buy_price >= trading_state.current_price:
-        new_buy_price = round(
-            new_buy_price - trading_state.active_grid_signle_price, 2
-        )
+        new_buy_price = round(new_buy_price - trading_state.active_grid_signle_price, 2)
     amount = GRID_CONFIG["GRID_AMOUNT"]
     return (False, new_buy_price, amount)
 
@@ -501,25 +519,18 @@ async def _buy_side_replenish_sell_order(trade_price: float = 0.0):
     """
     global trading_state
 
-
     low_sell_price = (
         trading_state.current_price + trading_state.base_grid_single_price * 2
     )
     if len(trading_state.sell_orders) > 0:
         low_sell_price = min(trading_state.sell_orders.values())
-    high_buy_price = (
-        trading_state.current_price - trading_state.base_grid_single_price
-    )
+    high_buy_price = trading_state.current_price - trading_state.base_grid_single_price
     if len(trading_state.buy_orders) > 0:
         high_buy_price = max(trading_state.buy_orders.values())
 
-    new_sell_price = round(
-        low_sell_price - trading_state.base_grid_single_price, 2
-    )
+    new_sell_price = round(low_sell_price - trading_state.base_grid_single_price, 2)
     if trade_price > 0:
-        new_sell_price = round(
-            trade_price + trading_state.base_grid_single_price, 2
-        )
+        new_sell_price = round(trade_price + trading_state.base_grid_single_price, 2)
 
     # 补单价格离当前价格过远，调整为最高买单价格上方2倍单网格价差
     if (
@@ -527,7 +538,10 @@ async def _buy_side_replenish_sell_order(trade_price: float = 0.0):
         > trading_state.base_grid_single_price * 2
     ):
         new_sell_price = round(
-            high_buy_price + trading_state.active_grid_signle_price + trading_state.base_grid_single_price, 2
+            high_buy_price
+            + trading_state.active_grid_signle_price
+            + trading_state.base_grid_single_price,
+            2,
         )
 
     # 当前价格超过新补单价格时，不补单
@@ -557,9 +571,9 @@ async def _sell_side_filled_order(trade_price: float = 0.0):
 
     # 卖单侧被吃单到补充卖单
     if (
-        trading_state.available_position_size > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
+        trading_state.available_position_size
+        > (len(trading_state.sell_orders) + 1) * GRID_CONFIG["GRID_AMOUNT"]
         and len(trading_state.sell_orders) > 0
-        and trading_state.current_position_sign > 0
     ):
         sell_order = await _sell_side_replenish_sell_order()
         if sell_order:
@@ -642,10 +656,16 @@ async def _over_range_replenish_order():
 
     if low_sell_price - high_buy_price > 2.5 * trading_state.active_grid_signle_price:
         # 补充买单
-        if trading_state.current_price - high_buy_price > trading_state.active_grid_signle_price * 1.5:
+        if (
+            trading_state.current_price - high_buy_price
+            > trading_state.active_grid_signle_price * 1.5
+        ):
             await _over_range_replenish_buy_order(high_buy_price)
         # 补充卖单，补充卖单不能触及到熔断前的仓位
-        if low_sell_price - trading_state.current_price > trading_state.active_grid_signle_price * 1.5:
+        if (
+            low_sell_price - trading_state.current_price
+            > trading_state.active_grid_signle_price * 1.5
+        ):
             if trading_state.available_position_size > 0:
                 await _over_range_replenish_sell_order(high_buy_price)
 
@@ -688,9 +708,17 @@ async def _over_range_replenish_sell_order(high_buy_price: float):
     大间距补充卖单
     """
     global trading_state
-    
+
+    if trading_state.last_filled_order_is_ask and len(trading_state.sell_orders) > 0:
+        # 如果上次成交订单是卖单，则不补充卖单
+        logger.info("当前成交订单为卖单，大间距不补充卖单")
+        return
+
     # 如果订单数量已经达到上限，删除最远订单
-    if trading_state.available_position_size <= len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"]:
+    if (
+        trading_state.available_position_size
+        <= len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"]
+    ):
         cancel_orders = []
         # 卖单侧删除从最高价开始删除
         sell_orders = dict(
@@ -700,7 +728,11 @@ async def _over_range_replenish_sell_order(high_buy_price: float):
                 reverse=True,
             )
         )
-        cancel_count = len(trading_state.sell_orders) - int(trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]) + 1
+        cancel_count = (
+            len(trading_state.sell_orders)
+            - int(trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"])
+            + 1
+        )
         for order_id, price in sell_orders.items():
             if len(cancel_orders) < cancel_count:
                 cancel_orders.append(order_id)
@@ -710,20 +742,11 @@ async def _over_range_replenish_sell_order(high_buy_price: float):
 
         await _cancel_orders(cancel_orders)
         logger.info(f"大间距补充卖单需要取消最远卖单，给出空间")
-    
+
     if (
         trading_state.available_position_size
         > len(trading_state.sell_orders) * GRID_CONFIG["GRID_AMOUNT"]
-        and trading_state.current_position_sign > 0
     ):
-        if (
-            trading_state.last_filled_order_is_ask
-            and len(trading_state.sell_orders) > 0
-        ):
-            # 如果上次成交订单是卖单，则不补充卖单
-            logger.info("当前成交订单为卖单，不补充卖单")
-            return
-
         new_sell_price = round(
             high_buy_price + trading_state.active_grid_signle_price * 2,
             2,
@@ -749,13 +772,14 @@ async def _sell_side_replenish_config_orders():
     卖单侧补充不少于配置单的数量,只向远距离补单
     """
     global trading_state
-    
-    available_sell_orders_count = trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
+
+    available_sell_orders_count = (
+        trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
+    )
     while (
         len(trading_state.sell_orders) < GRID_CONFIG["GRID_COUNT"]
         and trading_state.available_position_size
         > (len(trading_state.sell_orders)) * GRID_CONFIG["GRID_AMOUNT"]
-        and trading_state.current_position_sign > 0
         and len(trading_state.sell_orders) < available_sell_orders_count
     ):
         high_sell_price = (
@@ -774,7 +798,7 @@ async def _sell_side_replenish_config_orders():
                 new_sell_price + trading_state.active_grid_signle_price,
                 2,
             )
-            
+
         success, order_id = await trading_state.grid_trading.place_single_order(
             is_ask=True,
             price=new_sell_price,
@@ -785,6 +809,7 @@ async def _sell_side_replenish_config_orders():
             logger.info(
                 f"卖单数量不足补充卖单订单成功: 价格={new_sell_price}, 订单ID={order_id}"
             )
+
 
 #######################################################
 # 订单管理部分
@@ -799,6 +824,7 @@ async def check_current_orders():
 
     # 如果有一侧订单过多，取消最远的订单
     if len(trading_state.buy_orders) > GRID_CONFIG["GRID_COUNT"] + 1:
+        logger.info(f"买单侧订单过多，删除多余订单, {trading_state.buy_orders}")
         cancel_orders = []
         # 买单侧删除从最低价开始删除
         buy_orders = dict(
@@ -842,7 +868,9 @@ async def check_current_orders():
         > trading_state.available_position_size
         and (time.time() - trading_state.start_time) > 60
     ):
-        logger.info(f"卖单订单超过买单持仓数量，删除多余订单")
+        logger.info(
+            f"卖单订单超过买单持仓数量，删除多余订单，{trading_state.sell_orders}，{trading_state.available_position_size}"
+        )
         cancel_orders = []
         # 卖单侧删除从最高价开始删除
         sell_orders = dict(
@@ -872,13 +900,35 @@ async def check_current_orders():
             cancel_orders = list(trading_state.buy_orders.keys())
             logger.info("交易暂停，取消所有买单")
             await _cancel_orders(cancel_orders)
-                
+
         if len(trading_state.sell_orders) > 0:
             cancel_orders = list(trading_state.sell_orders.keys())
             logger.info("交易暂停，取消所有卖单")
             await _cancel_orders(cancel_orders)
 
-    # 检查重复订单
+    # 检查重复买单
+    if len(trading_state.buy_orders) > 0:
+        cancel_orders = []
+        # 卖单侧删除从最高价开始删除
+        buy_orders = dict(
+            sorted(
+                trading_state.buy_orders.copy().items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        )
+        prev_price = None
+        for order_id, price in buy_orders.items():
+            if prev_price is not None and round(price, 1) == round(prev_price, 1):
+                cancel_orders.append(order_id)
+                logger.info(f"检测到重复价格订单，删除订单ID={order_id}, 价格={price}")
+            prev_price = price
+
+        if len(cancel_orders) > 0:
+            logger.info(f"检查存在重复买单, {trading_state.buy_orders}")
+            await _cancel_orders(cancel_orders)
+            
+    # 检查重复卖单
     if len(trading_state.sell_orders) > 0:
         cancel_orders = []
         # 卖单侧删除从最高价开始删除
@@ -891,7 +941,7 @@ async def check_current_orders():
         )
         prev_price = None
         for order_id, price in sell_orders.items():
-            if prev_price is not None and round(price, 0) == round(prev_price, 0):
+            if prev_price is not None and round(price, 1) == round(prev_price, 1):
                 cancel_orders.append(order_id)
                 logger.info(f"检测到重复价格订单，删除订单ID={order_id}, 价格={price}")
             prev_price = price
@@ -979,6 +1029,7 @@ async def check_current_orders():
     # 同步订单状态
     await _sync_current_orders()
 
+
 async def _cancel_orders(cancel_orders: List[int]):
     """
     批量取消订单
@@ -991,7 +1042,8 @@ async def _cancel_orders(cancel_orders: List[int]):
             if order_id in trading_state.sell_orders:
                 del trading_state.sell_orders[order_id]
         logger.info(f"批量取消订单成功: 订单ID列表={cancel_orders}")
-    
+
+
 async def _sync_current_orders():
     """
     同步订单状态
@@ -1002,28 +1054,37 @@ async def _sync_current_orders():
     if orders is None:
         logger.exception("通过REST API获取当前订单失败")
         return
+    
+    # Convert orders to CCXT format if they aren't already
+    normalized_orders = [normalize_order_to_ccxt(order) for order in orders] if isinstance(orders, list) else []
+    
+    logger.info(f"同步当前订单数量: {len(normalized_orders)}")
     # 以orders为准，更新buy_orders和sell_orders
     buy_orders = {}
     sell_orders = {}
     trading_state.pause_positions = {}
     trading_state.pause_orders = {}
-    for order in orders:
-        order_id = order.order_index
-        if order.client_order_index > 0:
-            order_id = order.client_order_index
-        is_ask = order.is_ask
-        price = round(float(order.price), 6)
-        status = order.status
-        initial_base_amount = float(order.initial_base_amount)
+    for order in normalized_orders:
+        # Extract fields from CCXT format
+        order_id = str(order.get("clientOrderId") or order.get("id", ""))
+        side = order.get("side", "buy")  # 'buy' or 'sell'
+        is_ask = side == "sell"
+        price = round(float(order.get("price", 0)), 6)
+        status = order.get("status")
+        initial_base_amount = float(order.get("amount", 0))
+        
         # logger.info(f"同步订单: ID={order_id}, 方向={'卖单' if is_ask else '买单'}, 价格={price}, 状态={status}, 初始量={initial_base_amount}")
         if status != "open":
             continue
         if initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
             # 非网格订单，记录为熔断占位订单
             trading_state.pause_positions[price] = initial_base_amount
-            trading_state.pause_orders[order_id] = {'price': price, 'amount': initial_base_amount}
+            trading_state.pause_orders[order_id] = {
+                "price": price,
+                "amount": initial_base_amount,
+            }
             continue
-        
+
         if is_ask:
             sell_orders[order_id] = price
         else:
@@ -1036,9 +1097,10 @@ async def _sync_current_orders():
     buy_orders_prices = sorted(list(trading_state.buy_orders.copy().values()))
     sell_orders_prices = sorted(list(trading_state.sell_orders.copy().values()))
     logger.info(
-        f"活跃订单: 总数: {(len(buy_orders_prices)+len(sell_orders_prices))}, 买单: {buy_orders_prices}, 卖单: {sell_orders_prices}"
+        f"活跃订单: 总数: {(len(buy_orders)+len(sell_orders))}, 买单: {buy_orders_prices}, 卖单: {sell_orders_prices}"
     )
-    
+
+
 #######################################################
 
 
@@ -1048,33 +1110,45 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
     """
     global trading_state
 
-    rest_client = lighter.ApiClient(configuration=lighter.Configuration(host=BASE_URL))
     try:
         # 记录初始账户情况
-        account_api = lighter.AccountApi(rest_client)
-        account_info_resp = await account_api.account(
-            by="index", value=str(ACCOUNT_INDEX)
-        )
-        if account_info_resp.code != CODE_OK:
-            logger.info(f"获取账户信息失败: {account_info_resp.message}")
-            return False, None
-        account_info = account_info_resp.accounts[0]
-        trading_state.start_collateral = float(account_info.collateral)
+        account_info = await grid_trading.exchange.get_account_info()
+        if not account_info:
+            logger.info("获取账户信息失败")
+            return False
+        trading_state.start_collateral = float(account_info.get("total_equity") or account_info.get("collateral", 0))
 
-        position = account_info.positions[0]
-        position_size = position.position
-        trading_state.current_position_size = abs(float(position_size))
-        trading_state.current_position_sign = int(position.sign)
-        await check_position_limits(trading_state.current_position_size)
+        positions = account_info.get("positions", {})
         
+        # Get first position from dict values
+        if isinstance(positions, dict):
+            position = next(iter(positions.values())) if positions else None
+        else:
+            position = positions[0] if positions else None
+        
+        if position is None:
+            # 处理空 positions 的情况，例如设置默认值或跳过后续逻辑
+            position_size = 0
+            position_sign = 0
+        else:
+            # Handle different field names for position and sign
+            position_size = position.get("position", position.get("size", position.get("amount", 0)))
+            position_sign = position.get("sign", position.get("side", 0))
+        
+        # Convert sign/side to consistent format (1 for long, -1 for short, 0 for none)
+        if isinstance(position_sign, str):
+            position_sign = 1 if position_sign.lower() == "buy" else -1 if position_sign.lower() == "sell" else 0
+        
+        trading_state.current_position_size = abs(float(position_size))
+        trading_state.current_position_sign = int(position_sign)
+        await check_position_limits(trading_state.current_position_size)
+
         # 记录最后一单成交价格
         trades = await grid_trading.get_trades_by_rest(0, 1)
         if len(trades) > 0:
             last_trade = trades[0]
-            trading_state.last_trade_price = float(last_trade.price)
-            logger.info(
-                f"上次成交价格: {trading_state.last_trade_price}"
-            )
+            trading_state.last_trade_price = float(last_trade.get("price", 0))
+            logger.info(f"上次成交价格: {trading_state.last_trade_price}")
 
         # 等待获取当前价格
         max_wait = 10
@@ -1100,10 +1174,12 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
 
         # 同步订单状态
         await _sync_current_orders()
-        
+
         success = True
         if len(trading_state.buy_orders) > 0 or len(trading_state.sell_orders) > 0:
-            logger.info(f"当前账户已有未结订单或仓位，以原始订单为准，跳过初始化网格交易")
+            logger.info(
+                f"当前账户已有未结订单或仓位，以原始订单为准，跳过初始化网格交易"
+            )
             await check_current_orders()
         else:
             if not trading_state.grid_pause:
@@ -1113,7 +1189,6 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
                 success = await grid_trading.place_grid_orders(
                     1, base_price, grid_count, grid_amount, place_grid_spread
                 )
-
 
         if success:
             # 设置初始网格价格列表
@@ -1146,8 +1221,6 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
     except Exception as e:
         logger.exception(f"初始化网格交易时发生错误: {e}")
         return False
-    finally:
-        await rest_client.close()
 
 
 #######################################################
@@ -1157,40 +1230,39 @@ async def _risk_check(start: bool = False):
     """
     风控检查
     """
+    return
+    
     global trading_state
     grid_trading = trading_state.grid_trading
-    
-    cs_5m = await grid_trading.candle_stick(
-        market_id=GRID_CONFIG["MARKET_ID"], resolution="5m"
-    )
-    is_yindie_5m, yindie_details_5m = await grid_trading.is_yindie(
-        cs_5m
-    )
-    logger.info(
-        "5分钟阴跌检测: %s",
-        yindie_details_5m | {"result": is_yindie_5m},
-    )
+
+    # cs_5m = await grid_trading.candle_stick(
+    #     market_id=GRID_CONFIG["MARKET_ID"], resolution="5m"
+    # )
+    # is_yindie_5m, yindie_details_5m = await grid_trading.is_yindie(cs_5m)
+    # logger.info(
+    #     "5分钟阴跌检测: %s",
+    #     yindie_details_5m | {"result": is_yindie_5m},
+    # )
 
     cs_15m = await grid_trading.candle_stick(
         market_id=GRID_CONFIG["MARKET_ID"], resolution="15m"
     )
-    is_yindie_15m, yindie_details_15m = await grid_trading.is_yindie(
-        cs_15m
-    )
+    is_yindie_15m, yindie_details_15m = await grid_trading.is_yindie(cs_15m)
     logger.info(
         "15分钟阴跌检测: %s",
         yindie_details_15m | {"result": is_yindie_15m},
     )
 
-    is_ema_filter, ema_filter_details = (
-        await grid_trading.ema_mean_reversion_filter(cs_15m)
+    is_ema_filter, ema_filter_details = await grid_trading.ema_mean_reversion_filter(
+        cs_15m
     )
     logger.info(
         "EMA均值回归检测: %s",
         ema_filter_details | {"result": is_ema_filter},
     )
 
-    if is_yindie_5m or is_yindie_15m or is_ema_filter:
+    # if is_yindie_5m or is_yindie_15m or is_ema_filter:
+    if is_yindie_15m or is_ema_filter:
         trading_state.grid_pause = True
         # 记录熔断仓位
         # （？？似乎不需要考虑历史记录隔离，因为占位本身是等待价格到达后自动触发平仓的，只要隔离订单本身不影响网格订单就好了）
@@ -1201,14 +1273,10 @@ async def _risk_check(start: bool = False):
             if not trading_state.pause_position_exist:
                 await _save_pause_position()
         # 记录熔断时仓位
-        if is_yindie_5m:
-            logger.info(
-                f"⚠️ 警告：当前5分钟线阴跌中,暂停交易, {yindie_details_5m}"
-            )
+        # if is_yindie_5m:
+        #     logger.info(f"⚠️ 警告：当前5分钟线阴跌中,暂停交易, {yindie_details_5m}")
         if is_yindie_15m:
-            logger.info(
-                f"⚠️ 警告：当前15分钟线阴跌中,暂停交易, {yindie_details_15m}"
-            )
+            logger.info(f"⚠️ 警告：当前15分钟线阴跌中,暂停交易, {yindie_details_15m}")
         if is_ema_filter:
             logger.info(
                 f"⚠️ 警告：当前EMA均值回归趋势不利,暂停交易, {ema_filter_details}"
@@ -1219,17 +1287,19 @@ async def _risk_check(start: bool = False):
             trading_state.grid_pause = False
             trading_state.pause_position_exist = False
             # logger.info("✅ 当前风控检查通过，恢复网格交易")
-            
-    if trading_state.grid_pause and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]:
+
+    if (
+        trading_state.grid_pause
+        and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]
+    ):
         # 已经熔断状态下如果还有可用仓位，下占位单
         await _save_pause_position()
-            
+
     if trading_state.grid_decrease_status:
-        logger.info(
-            f"⚠️ 警告：仓位超出降低点，开始降低仓位"
-        )
+        logger.info(f"⚠️ 警告：仓位超出降低点，开始降低仓位")
         await _reduce_position()
-                    
+
+
 async def _save_pause_position():
     """
     熔断时创建占位仓位订单
@@ -1237,27 +1307,42 @@ async def _save_pause_position():
     global trading_state
 
     try:
+        if trading_state.available_position_size < GRID_CONFIG["GRID_AMOUNT"]:
+            return
+        
         orders = []
         # 仓位形成距离
-        position_price_range = trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"] * trading_state.active_grid_signle_price
-        
+        position_price_range = (
+            trading_state.available_position_size
+            / GRID_CONFIG["GRID_AMOUNT"]
+            * trading_state.active_grid_signle_price
+        )
+
         # 成本价理论上是最后价格 + 距离差价/2，占位订单价格设置在成本价上方一些，追求微盈利
         if trading_state.last_trade_price > 0:
             # 为使订单过于集中，需要平均分配占位订单，以做到平滑过渡，成本线订单为最低价格订单，可以占用分配订单中的一半仓位
             # 剩下一半按照仓位量均分在上方若干单,最高不超三分之二处，以求尽快降低仓位
-            low_order_price = round(trading_state.last_trade_price + position_price_range / 2, 2)
+            low_order_price = round(
+                trading_state.last_trade_price + position_price_range / 2, 2
+            )
             low_order_position = trading_state.available_position_size
             if low_order_position > GRID_CONFIG["GRID_AMOUNT"] * 4:
                 low_order_position = round(trading_state.available_position_size / 2, 2)
-                
-                remaining_order_position = trading_state.available_position_size - low_order_position
-                remaining_order_price = round(trading_state.last_trade_price + position_price_range / 4 * 3, 2)
+
+                remaining_order_position = (
+                    trading_state.available_position_size - low_order_position
+                )
+                remaining_order_price = round(
+                    trading_state.last_trade_price + position_price_range / 4 * 3, 2
+                )
                 remainin_prder = (True, remaining_order_price, remaining_order_position)
                 orders.append(remainin_prder)
-                
+
             low_order = (True, low_order_price, low_order_position)
             orders.append(low_order)
-            success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+            success, order_ids = await trading_state.grid_trading.place_multi_orders(
+                orders
+            )
             if success:
                 trading_state.pause_position_exist = True
                 trading_state.available_position_size = 0.0
@@ -1268,27 +1353,27 @@ async def _save_pause_position():
                 logger.error(f"占位订单创建失败, {orders}")
     except Exception as e:
         logger.exception(f"创建占位订单失败: {e}")
-        
-        
+
+
 async def _get_current_pause_position() -> float:
     """
     获取当前价格下熔断占位仓位
     """
     global trading_state
-    
+
     if len(trading_state.pause_positions) == 0:
         return 0
-    
+
     total_position = 0
     for price, amount in trading_state.pause_positions.items():
         if price > trading_state.current_price:
             total_position += amount
-            
+
     return round(total_position, 6)
 
+
 #######################################################
-            
-            
+
 
 async def run_grid_trading():
     """
@@ -1298,62 +1383,59 @@ async def run_grid_trading():
 
     logger.info("🎯 启动网格交易系统")
     logger.info(f"配置参数: {GRID_CONFIG}")
+    logger.info(f"交易所类型: {EXCHANGE_TYPE}")
 
-    # 创建签名客户端
-    private_keys = {}
-    private_keys[API_KEY_INDEX] = API_KEY_PRIVATE_KEY
-    signer_client = lighter.SignerClient(
-        url=BASE_URL,
-        api_private_keys=private_keys,
-        account_index=ACCOUNT_INDEX,
+    # 创建交易所适配器
+    lighter_adapter = create_exchange_adapter(
+        exchange_type=EXCHANGE_TYPE, market_id=GRID_CONFIG["MARKET_ID"]
     )
+    grvt_adapter = create_exchange_adapter(
+        exchange_type="grvt", symbol="ETH_USDT_Perp"
+    )
+    if EXCHANGE_TYPE == "grvt":
+        exchange = grvt_adapter
+    else:
+        exchange = lighter_adapter
+        
+    if exchange is None:
+        logger.exception(f"不支持的交易所类型: {EXCHANGE_TYPE}")
+        return
+
+    # 初始化客户端
+    await exchange.initialize_client()
 
     # 创建认证令牌
-    # expiry = int(time.time()) + 10 * lighter.SignerClient.MINUTE
-    auth, err = signer_client.create_auth_token_with_expiry()
+    auth, err = await exchange.create_auth_token()
     if err is not None:
         logger.exception(f"创建认证令牌失败: {auth}")
         return
 
     # 创建网格交易实例
     grid_trading = GridTrading(
-        ws_client=None,  # 稍后设置
-        signer_client=signer_client,
-        account_index=ACCOUNT_INDEX,
-        api_key_index=API_KEY_INDEX,
+        exchange=exchange,
         market_id=GRID_CONFIG["MARKET_ID"],
     )
 
-    # 创建WebSocket客户端
-    client = create_unified_client(
-        auth_token=auth,
-        market_stats_ids=[GRID_CONFIG["MARKET_ID"]],
-        on_market_stats_update=on_market_stats_update,
-        account_all_orders_ids=[ACCOUNT_INDEX],
-        on_account_all_orders_update=on_account_all_orders_update,
-        account_all_positions_ids=[ACCOUNT_INDEX],
-        on_account_all_positions_update=on_account_all_positions_update,
+    # 设置订阅回调
+    await exchange.subscribe(
+        {
+            "market_stats": on_market_stats_update,
+            "orders": on_account_all_orders_update,
+            "positions": on_account_all_positions_update,
+        },
+        proxy="http://127.0.0.1:7890",
     )
 
-    # 设置网格交易的WebSocket客户端
-    grid_trading.ws_client = client
     # 设置全局网格交易实例
     trading_state.grid_trading = grid_trading
-    # 设置网格交易的REST客户端
-    configuration = lighter.Configuration(BASE_URL)
-    api_client = lighter.ApiClient(configuration)
-    account_api = lighter.AccountApi(api_client)
 
     try:
-        # 启动WebSocket客户端（异步方式）
-        ws_task = asyncio.create_task(client.run_async())
-
         # 等待连接建立
         await asyncio.sleep(2)
-        
+
         # 风控检查
         await _risk_check(start=True)
-                    
+
         # # 初始化网格交易
         if not await initialize_grid_trading(grid_trading):
             logger.exception("网格交易初始化失败，退出")
@@ -1368,33 +1450,56 @@ async def run_grid_trading():
                 await asyncio.sleep(10)
 
                 # 检查仓位状态
-                account_info_resp = await account_api.account(
-                    by="index", value=str(ACCOUNT_INDEX)
+                account_info = await exchange.get_account_info()
+                if not account_info:
+                    logger.info("获取账户信息失败")
+                    continue
+                positions = account_info.get("positions", {})
+                # if not positions:
+                #     logger.info("账户没有仓位信息")
+                #     continue
+                
+                # Get first position from dict values
+                if isinstance(positions, dict):
+                    position = next(iter(positions.values())) if positions else None
+                else:
+                    position = positions[0] if positions else None
+                
+                # Handle case when position is None
+                if position is None:
+                    position_size = 0
+                    position_sign = 0
+                else:
+                    # Handle different field names for position and sign
+                    position_size = position.get("position", position.get("size", position.get("amount", 0)))
+                    position_sign = position.get("sign", position.get("side", 0))
+                
+                # Convert sign/side to consistent format (1 for long, -1 for short, 0 for none)
+                if isinstance(position_sign, str):
+                    position_sign = 1 if position_sign.lower() == "buy" else -1 if position_sign.lower() == "sell" else 0
+                
+                trading_state.current_position_size = round(
+                    abs(float(position_size)), 2
                 )
-                if account_info_resp.code != CODE_OK:
-                    logger.info(f"获取账户信息失败: {account_info_resp.message}")
-                    return False, None
-                account_info = account_info_resp.accounts[0]
-                position = account_info.positions[0]
-                position_size = position.position
-                trading_state.current_position_size = round(abs(float(position_size)), 2)
-                trading_state.current_position_sign = int(position.sign)
+                trading_state.current_position_sign = int(position_sign)
                 if position_size is not None:
                     await check_position_limits(trading_state.current_position_size)
 
-                unrealized_pnl = float(position.unrealized_pnl)
+                unrealized_pnl = float(position.get("unrealized_pnl", position.get("pnl", 0))) if position else 0.0
 
                 # 检查当前账户保证金
-                trading_state.current_collateral = float(account_info.collateral)
+                trading_state.current_collateral = float(
+                    account_info.get("total_equity") or account_info.get("collateral", 0)
+                )
 
                 unrealized_collateral = (
                     trading_state.current_collateral + unrealized_pnl
                 )
                 pnl = unrealized_collateral - trading_state.start_collateral
                 logger.info(
-                    f"💰盈亏情况: 初始: {round(trading_state.start_collateral, 6)}, 当前: {round(unrealized_collateral, 6)}, 盈亏: {round(pnl,6)}, " + 
-                    f"本次套利总收益: {round(trading_state.total_profit, 2)}, 动态收益: {round(trading_state.active_profit, 2)}, 可用减仓收益: {round(trading_state.available_reduce_profit, 2)} " + 
-                    f"网格间距: {round(trading_state.active_grid_signle_price, 2)}"
+                    f"💰盈亏情况: 初始: {round(trading_state.start_collateral, 6)}, 当前: {round(unrealized_collateral, 6)}, 盈亏: {round(pnl,6)}, "
+                    + f"本次套利总收益: {round(trading_state.total_profit, 2)}, 动态收益: {round(trading_state.active_profit, 2)}, 可用减仓收益: {round(trading_state.available_reduce_profit, 2)} "
+                    + f"网格间距: {round(trading_state.active_grid_signle_price, 2)}"
                 )
                 time_formatted = await seconds_formatter(
                     time.time() - trading_state.start_time
@@ -1438,9 +1543,13 @@ async def run_grid_trading():
                         min_step, min(raw_step, max_step)
                     )
                 else:
-                    trading_state.active_grid_signle_price = trading_state.base_grid_single_price
+                    trading_state.active_grid_signle_price = (
+                        trading_state.base_grid_single_price
+                    )
                     if trading_state.grid_buy_spread_alert:
-                        trading_state.active_grid_signle_price = trading_state.base_grid_single_price * 2
+                        trading_state.active_grid_signle_price = (
+                            trading_state.base_grid_single_price * 2
+                        )
 
                 # 每60秒执行一次（10秒 * 6 = 60秒）
                 if counter % 6 == 0:
@@ -1467,16 +1576,7 @@ async def run_grid_trading():
         logger.exception(f"网格交易运行时发生错误")
     finally:
         trading_state.is_running = False
-        await signer_client.close()
-        await api_client.close()
-        # 优雅地停止异步WebSocket客户端
-        client.stop()
-        if not ws_task.done():
-            try:
-                await asyncio.wait_for(ws_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                ws_task.cancel()
-                await ws_task
+        await exchange.close()
         logger.info("🔚 网格交易系统已停止")
 
 

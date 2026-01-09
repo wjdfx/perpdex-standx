@@ -11,6 +11,9 @@ load_dotenv()
 # API配置
 BASE_URL = os.getenv('BASE_URL', "https://mainnet.zklighter.elliot.ai")  # 测试网地址
 
+# 交易所配置
+EXCHANGE_TYPE = os.getenv('EXCHANGE_TYPE', 'lighter')  # 交易所类型，默认 lighter
+
 # 账户配置 - 使用示例账户信息
 L1_ADDRESS = os.getenv('L1_ADDRESS', '')
 ACCOUNT_INDEX = int(os.getenv('ACCOUNT_INDEX', ''))

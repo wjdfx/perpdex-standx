@@ -4,6 +4,8 @@ import asyncio
 import time
 from websockets.sync.client import connect
 from websockets.asyncio.client import connect as connect_async
+import aiohttp
+from aiohttp import WSMsgType
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +36,7 @@ class UnifiedWebSocketClient:
         max_reconnect_attempts=100,
         initial_reconnect_delay=1,
         max_reconnect_delay=30,
+        proxy=None,
     ):
         """
         初始化统一的 WebSocket 客户端
@@ -55,6 +58,7 @@ class UnifiedWebSocketClient:
             max_reconnect_attempts: 最大重连尝试次数，默认为5
             initial_reconnect_delay: 初始重连延迟（秒），默认为1
             max_reconnect_delay: 最大重连延迟（秒），默认为30
+            proxy: 代理 URL，例如 "http://127.0.0.1:7890"，如果为None则不使用代理
         """
         self.base_url = f"wss://{host}{path}"
         self.market_stats_ids = market_stats_ids
@@ -62,6 +66,7 @@ class UnifiedWebSocketClient:
         self.account_all_orders_ids = account_all_orders_ids
         self.account_all_positions_ids = account_all_positions_ids
         self.auth_token = auth_token
+        self.proxy = proxy
         
         # 回调函数
         self.on_market_stats_update = on_market_stats_update or self.default_market_stats_handler
@@ -92,6 +97,40 @@ class UnifiedWebSocketClient:
         # 重连状态
         self.reconnect_attempts = 0
         self.is_reconnecting = False
+
+        # aiohttp session for proxy support
+        self.session = None
+
+    async def _send_message(self, message):
+        """
+        统一的发送消息方法，支持不同类型的 WebSocket
+        """
+        if hasattr(self.ws, 'send_str'):
+            # aiohttp WebSocket
+            await self.ws.send_str(message)
+        else:
+            # websockets WebSocket
+            await self.ws.send(message)
+
+    async def connect_async(self, url):
+        """
+        异步连接到 WebSocket 服务器，支持代理
+
+        Args:
+            url: WebSocket URL
+
+        Returns:
+            WebSocket 连接对象
+        """
+        if self.proxy:
+            # 使用 aiohttp 支持代理
+            if self.session is None:
+                connector = aiohttp.TCPConnector(ssl=False)
+                self.session = aiohttp.ClientSession(connector=connector)
+            return await self.session.ws_connect(url, proxy=self.proxy)
+        else:
+            # 使用 websockets 直接连接
+            return await connect_async(url)
 
     def default_market_stats_handler(self, market_id, market_stats):
         """
@@ -193,7 +232,18 @@ class UnifiedWebSocketClient:
         异步处理接收到的 WebSocket 消息
         """
         try:
-            if isinstance(message, str):
+            # 处理 aiohttp WSMessage
+            if hasattr(message, 'type') and hasattr(message, 'data'):
+                # aiohttp WSMessage
+                if message.type == WSMsgType.TEXT:
+                    message = json.loads(message.data)
+                elif message.type == WSMsgType.ERROR:
+                    logger.error(f"WebSocket error: {message.data}")
+                    return
+                else:
+                    logger.warning(f"Unhandled message type: {message.type}")
+                    return
+            elif isinstance(message, str):
                 message = json.loads(message)
 
             message_type = message.get("type")
@@ -217,7 +267,7 @@ class UnifiedWebSocketClient:
             elif message_type == "subscribed/account_all_positions":
                 await self.handle_update_account_all_positions_async(message)
             elif message_type == "ping":
-                await self.ws.send(json.dumps({"type": "pong"}))
+                await self._send_message(json.dumps({"type": "pong"}))
                 logger.info("发送心跳响应 pong...")
             else:
                 # 处理通用消息
@@ -723,7 +773,7 @@ class UnifiedWebSocketClient:
         """
         if self.ws and self.running:
             try:
-                await self.ws.send(json.dumps(message))
+                await self._send_message(json.dumps(message))
             except Exception as e:
                 logger.exception(f"Error sending message: {e}")
         else:
@@ -782,7 +832,7 @@ class UnifiedWebSocketClient:
                     "tx_infos": json.dumps(tx_infos)
                 }
             }
-            await self.ws.send(json.dumps(message))
+            await self._send_message(json.dumps(message))
             logger.info(f"Sent batch transaction with {len(tx_types)} transactions")
             return True
         except Exception as e:
@@ -842,7 +892,7 @@ class UnifiedWebSocketClient:
                     "tx_info": json.loads(tx_info)
                 }
             }
-            await self.ws.send(json.dumps(message))
+            await self._send_message(json.dumps(message))
             # logger.info(f"Sent single transaction of type {tx_type}")
             return True
         except Exception as e:
@@ -868,7 +918,7 @@ class UnifiedWebSocketClient:
 
             await asyncio.sleep(delay)
 
-            self.ws = await connect_async(self.base_url)
+            self.ws = await self.connect_async(self.base_url)
             # 重连成功后，服务器会发送 "connected" 消息，handle_connected_async 会处理订阅
             # 创建认证令牌
             from lighter import SignerClient
@@ -1008,7 +1058,7 @@ class UnifiedWebSocketClient:
                     await asyncio.sleep(delay)
                 
                 logger.info(f"Connecting to {self.base_url}")
-                self.ws = await connect_async(self.base_url)
+                self.ws = await self.connect_async(self.base_url)
                 
                 from lighter import SignerClient
                 from common.config import (
@@ -1075,6 +1125,10 @@ class UnifiedWebSocketClient:
         # 重置重连状态
         self.reconnect_attempts = 0
         self.is_reconnecting = False
+        # 关闭 aiohttp session
+        if self.session:
+            asyncio.create_task(self.session.close())
+            self.session = None
 
     def add_market_stats_subscription(self, market_id):
         """
@@ -1188,6 +1242,7 @@ def create_unified_client(
     max_reconnect_attempts=5,
     initial_reconnect_delay=1,
     max_reconnect_delay=30,
+    proxy=None,
 ):
     """
     创建统一的 WebSocket 客户端的工厂函数，支持同时订阅多种类型的消息
@@ -1207,6 +1262,7 @@ def create_unified_client(
         max_reconnect_attempts: 最大重连尝试次数，默认为5
         initial_reconnect_delay: 初始重连延迟（秒），默认为1
         max_reconnect_delay: 最大重连延迟（秒），默认为30
+        proxy: 代理 URL，例如 "http://127.0.0.1:7890"，如果为None则不使用代理
 
     Returns:
         UnifiedWebSocketClient 实例
@@ -1226,4 +1282,5 @@ def create_unified_client(
         max_reconnect_attempts=max_reconnect_attempts,
         initial_reconnect_delay=initial_reconnect_delay,
         max_reconnect_delay=max_reconnect_delay,
+        proxy=proxy,
     )

@@ -7,5 +7,9 @@ numpy
 
 # WebSocket 支持
 websockets
+aiohttp
 # 环境变量支持
 python-dotenv
+
+# grvt
+grvt-pysdk
