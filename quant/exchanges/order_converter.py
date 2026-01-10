@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Order format converter module for unifying Lighter and GRVT order formats to CCXT standard.
+Order format converter module for unifying Lighter, GRVT, and StandX order formats to CCXT standard.
 """
 
 import logging
@@ -22,11 +22,13 @@ def normalize_order_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         CCXT standardized order dictionary
     """
-    # Determine if this is a Lighter or GRVT order based on field structure
+    # Determine if this is a Lighter, GRVT, or StandX order based on field structure
     if is_lighter_order(order):
         return convert_lighter_to_ccxt(order)
     elif is_grvt_order(order):
         return convert_grvt_to_ccxt(order)
+    elif is_standx_order(order):
+        return convert_standx_to_ccxt(order)
     else:
         logger.warning(f"Unknown order format: {order}")
         return convert_unknown_to_ccxt(order)
@@ -51,6 +53,21 @@ def is_grvt_order(order: Dict[str, Any]) -> bool:
         'legs' in order and
         'state' in order and
         'metadata' in order
+    )
+
+
+def is_standx_order(order: Dict[str, Any]) -> bool:
+    """Check if order is in StandX format."""
+    # StandX orders have id, cl_ord_id, symbol, side, order_type, status fields
+    return (
+        'id' in order and
+        'cl_ord_id' in order and
+        'symbol' in order and
+        'side' in order and
+        'order_type' in order and
+        'status' in order and
+        'price' in order and
+        'qty' in order
     )
 
 
@@ -196,14 +213,108 @@ def convert_grvt_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def map_time_in_force(time_in_force: str) -> str:
-    """Map GRVT time_in_force to CCXT format."""
+    """Map exchange time_in_force to CCXT format."""
     mapping = {
+        # GRVT time_in_force values
         'GOOD_TILL_TIME': 'GTC',
         'IMMEDIATE_OR_CANCEL': 'IOC',
         'FILL_OR_KILL': 'FOK',
-        'GOOD_TILL_CANCEL': 'GTC'
+        'GOOD_TILL_CANCEL': 'GTC',
+        # StandX time_in_force values
+        'gtc': 'GTC',
+        'ioc': 'IOC',
+        'fok': 'FOK',
+        'gtx': 'GTC'
     }
     return mapping.get(time_in_force, 'GTC')
+
+
+def convert_standx_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert StandX order format to CCXT format."""
+    try:
+        # Map status
+        status_mapping = {
+            'new': 'open',
+            'open': 'open',
+            'filled': 'closed',
+            'canceled': 'canceled',
+            'expired': 'expired',
+            'rejected': 'rejected'
+        }
+        
+        # Map side
+        side = order.get('side', 'buy')
+        
+        # Convert string numbers to floats
+        price = float(order.get('price', '0'))
+        amount = float(order.get('qty', '0'))
+        filled = float(order.get('fill_qty', '0'))
+        average_price = float(order.get('fill_avg_price', '0'))
+        
+        # Calculate remaining amount
+        remaining = amount - filled
+        
+        # Convert symbol format from BTC-USD to BTC/USDT
+        symbol = order.get('symbol', 'BTC-USD').replace('-', '/')
+        
+        # Convert timestamp from ISO8601 to Unix timestamp in milliseconds
+        created_at = order.get('created_at', '')
+        if created_at:
+            # Parse ISO8601 format like "2025-08-11T03:35:25.559151Z"
+            try:
+                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                timestamp_ms = int(dt.timestamp() * 1000)
+                datetime_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            except:
+                timestamp_ms = 0
+                datetime_str = created_at
+        else:
+            timestamp_ms = 0
+            datetime_str = ''
+        
+        # Build CCXT order
+        ccxt_order = {
+            'id': str(order.get('id', '')),
+            'clientOrderId': str(order.get('cl_ord_id', '')),
+            'datetime': datetime_str,
+            'timestamp': timestamp_ms,
+            'lastTradeTimestamp': None,
+            'status': status_mapping.get(order.get('status', 'open'), 'open'),
+            'symbol': symbol,
+            'type': order.get('order_type', 'limit'),
+            'timeInForce': map_time_in_force(order.get('time_in_force', 'gtc')),
+            'side': side,
+            'price': price,
+            'average': average_price,
+            'amount': amount,
+            'filled': filled,
+            'remaining': remaining,
+            'cost': filled * average_price,
+            'trades': [],
+            'fee': {},
+            'reduceOnly': order.get('reduce_only', False),
+            'postOnly': False,  # StandX doesn't have post_only field
+            'info': order  # Store original order as info
+        }
+        
+        return ccxt_order
+        
+    except Exception as e:
+        logger.error(f"Error converting StandX order to CCXT: {e}", exc_info=True)
+        return {
+            'id': str(order.get('id', '')),
+            'clientOrderId': str(order.get('cl_ord_id', '')),
+            'status': 'unknown',
+            'symbol': 'BTC/USDT',
+            'side': 'buy',
+            'price': 0,
+            'amount': 0,
+            'filled': 0,
+            'remaining': 0,
+            'cost': 0,
+            'info': order,
+            'error': str(e)
+        }
 
 
 def convert_unknown_to_ccxt(order: Dict[str, Any]) -> Dict[str, Any]:

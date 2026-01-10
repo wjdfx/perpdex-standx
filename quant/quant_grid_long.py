@@ -840,27 +840,27 @@ async def check_current_orders():
 
         await _cancel_orders(cancel_orders)
 
-    if len(trading_state.sell_orders) > GRID_CONFIG["MAX_TOTAL_ORDERS"]:
-        cancel_orders = []
-        # 卖单侧删除从最高价开始删除
-        sell_orders = dict(
-            sorted(
-                trading_state.sell_orders.items(),
-                key=lambda item: item[1],
-                reverse=True,
-            )
-        )
-        cancel_count = (
-            len(trading_state.sell_orders) - GRID_CONFIG["MAX_TOTAL_ORDERS"] + 2
-        )
-        for order_id, price in sell_orders.items():
-            if len(cancel_orders) < cancel_count:
-                cancel_orders.append(order_id)
-                logger.info(f"取消最远卖单订单，价格={price}, 订单ID={order_id}")
-            else:
-                break
+    # if len(trading_state.sell_orders) > GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+    #     cancel_orders = []
+    #     # 卖单侧删除从最高价开始删除
+    #     sell_orders = dict(
+    #         sorted(
+    #             trading_state.sell_orders.items(),
+    #             key=lambda item: item[1],
+    #             reverse=True,
+    #         )
+    #     )
+    #     cancel_count = (
+    #         len(trading_state.sell_orders) - GRID_CONFIG["MAX_TOTAL_ORDERS"] + 2
+    #     )
+    #     for order_id, price in sell_orders.items():
+    #         if len(cancel_orders) < cancel_count:
+    #             cancel_orders.append(order_id)
+    #             logger.info(f"取消最远卖单订单，价格={price}, 订单ID={order_id}")
+    #         else:
+    #             break
 
-        await _cancel_orders(cancel_orders)
+    #     await _cancel_orders(cancel_orders)
 
     # 卖单侧订单不能超过买单持仓量
     if (
@@ -1230,7 +1230,7 @@ async def _risk_check(start: bool = False):
     """
     风控检查
     """
-    return
+    # return
     
     global trading_state
     grid_trading = trading_state.grid_trading

@@ -1,4 +1,4 @@
-import perp_lighter.quant_grid_long as quant_grid_long
+import quant.quant_grid_long as quant_grid_long
 import asyncio
 
 
