@@ -18,8 +18,8 @@ class MakerConfig:
     """
 
     symbol: str = "BTC-USD"
-    order_distance_bps: float = 7  # 挂单距离 mark_price 的 bps
-    cancel_distance_bps: float = 5  # 价格靠近到这个距离时撤单
+    order_distance_bps: float = 8  # 挂单距离 mark_price 的 bps
+    cancel_distance_bps: float = 6  # 价格靠近到这个距离时撤单
     rebalance_distance_bps: float = 10  # 价格远离超过这个距离时撤单重挂
     order_size_btc: float = 0.01 # 每笔挂单数量
     max_position_btc: float = 0.02  # 最大持仓，超过则不再挂单
@@ -122,6 +122,7 @@ class OnlyMakerStrategy:
     async def on_positions(self, account_id: str, positions: Dict[str, Any]):
         """持仓回调，记录当前仓位大小。"""
         try:
+            logger.info(f"仓位信息: {positions}")
             if not isinstance(positions, dict):
                 return
             pos = positions.get(self.cfg.symbol) or positions.get(self.cfg.symbol.replace("-", "/"))
@@ -194,12 +195,12 @@ class OnlyMakerStrategy:
                 await self._refresh_open_orders(orders)
                 
                 # 检查价格距离
-                for b in self.open_orders["bid"]:
-                    delta_bps = abs(b["price"] - self.mark_price) / self.mark_price * 10000
-                    logger.info(f"当前买单bps：{delta_bps}")
-                for b in self.open_orders["ask"]:
-                    delta_bps = abs(b["price"] - self.mark_price) / self.mark_price * 10000
-                    logger.info(f"当前卖单bps：{delta_bps}")
+                for o in self.open_orders["bid"]:
+                    delta_bps = abs(o["price"] - self.mark_price) / self.mark_price * 10000
+                    logger.info(f"当前买单, 价格：{o["price"]}, bps：{delta_bps}")
+                for o in self.open_orders["ask"]:
+                    delta_bps = abs(o["price"] - self.mark_price) / self.mark_price * 10000
+                    logger.info(f"当前卖单, 价格：{o["price"]}, bps：{delta_bps}")
                 logger.info(f"当前价格：{self.mark_price}, 持仓：{self.position_qty}, ATR：{self.current_atr}")
             except asyncio.CancelledError:
                 break
@@ -246,7 +247,7 @@ class OnlyMakerStrategy:
         for order in orders:
             delta_bps = abs(order["price"] - self.mark_price) / self.mark_price * 10000
             if delta_bps <= self.cfg.cancel_distance_bps or delta_bps >= self.cfg.rebalance_distance_bps:
-                logger.info(f"{side} 撤单，delta_bps={delta_bps:.2f} price={order['price']}")
+                logger.info(f"{side} 撤单，delta_bps={delta_bps:.2f} price={order['price']}, 当前价格: {self.mark_price}")
                 await self.cancel_order(order["id"])
             else:
                 kept.append(order)
@@ -292,7 +293,7 @@ class OnlyMakerStrategy:
             if success:
                 order_info = {"id": order_id, "price": price}
                 existing.append(order_info)
-                logger.info(f"{side} 挂单成功 price={price} size={self.cfg.order_size_btc}")
+                logger.info(f"{side} 挂单成功 price={price} size={self.cfg.order_size_btc}, 当前价格: {self.mark_price}")
             else:
                 logger.warning(f"{side} 挂单失败 price={price} size={self.cfg.order_size_btc}")
 

@@ -394,7 +394,7 @@ class StandXAdapter(ExchangeInterface):
                 "order_type": "limit",
                 "qty": str(amount),
                 "price": str(price),
-                "time_in_force": "gtc",
+                "time_in_force": "alo",
                 "reduce_only": False,
                 "cl_ord_id": client_order_id
             }
