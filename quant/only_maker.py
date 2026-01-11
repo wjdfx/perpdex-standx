@@ -78,11 +78,14 @@ class OnlyMakerStrategy:
 
         # open_orders: {"bid": [{"id": str, "price": float}, ...], "ask": [...]}
         self.open_orders: Dict[str, List[Dict[str, Any]]] = {"bid": [], "ask": []}
+        self.fix_order: Dict[str, Any] = None
 
         self._lock = asyncio.Lock()
         self._running = False
         self._atr_task: Optional[asyncio.Task] = None
         self._order_sync_task: Optional[asyncio.Task] = None
+        self._market_stats_monitor_task: Optional[asyncio.Task] = None
+        self.last_market_stats_time: Optional[float] = None
 
     # ------------------------------------------------------------------
     # 公共方法
@@ -103,6 +106,8 @@ class OnlyMakerStrategy:
         self._atr_task = asyncio.create_task(self._atr_loop())
         # 定时拉取 REST 订单快照，避免 WS 漏单
         self._order_sync_task = asyncio.create_task(self._check_status_loop())
+        # 启动市场数据监控任务
+        self._market_stats_monitor_task = asyncio.create_task(self._market_stats_monitor_loop())
         logger.info("OnlyMakerStrategy started")
 
     async def stop(self):
@@ -121,6 +126,12 @@ class OnlyMakerStrategy:
                 await self._order_sync_task
             except asyncio.CancelledError:
                 pass
+        if self._market_stats_monitor_task:
+            self._market_stats_monitor_task.cancel()
+            try:
+                await self._market_stats_monitor_task
+            except asyncio.CancelledError:
+                pass
         await self.adapter.close()
         logger.info("OnlyMakerStrategy stopped")
 
@@ -134,6 +145,7 @@ class OnlyMakerStrategy:
             if mark_price is None:
                 return
             self.mark_price = float(mark_price)
+            self.last_market_stats_time = time.time()
             logger.debug(f"当前价格：{mark_price}")
             await self._reconcile_orders()
         except Exception as exc:
@@ -160,28 +172,14 @@ class OnlyMakerStrategy:
                 self.position_qty = float(qty)
             
             if self.position_qty != 0:
-                entry_price = float(pos.get("entry_price"))
-                # 挂一个回本单，如果当前价格已过，则挂到当前价格附近，只挂maker单
-                is_ask = self.position_qty > 0
-                if is_ask:
-                    # 卖单
-                    if self.mark_price > entry_price:
-                        entry_price = self.mark_price
-                    target_price = entry_price * (1 + 0.0002)
-                else:
-                    # 买单
-                    if self.mark_price < entry_price:
-                        entry_price = self.mark_price
-                    target_price = entry_price * (1 - 0.0002)
-                    
-                price = round(target_price, 2)
-                client_order_id = f"fix_{int(time.time() * 1000) % 1000000}"
-                success, order_id = await self.adapter.place_single_order(is_ask, price, self.cfg.order_size_btc, client_order_id)
-                if success:
-                    order_info = {"id": order_id, "price": price}
-                    logger.info(f"修复订单挂单成功: {order_info}, size={self.cfg.order_size_btc}, 当前价格: {self.mark_price}")
-                else:
-                    logger.warning(f"修复订单挂单失败: {order_info}, size={self.cfg.order_size_btc}")
+                await self._place_fix_order(pos)
+                
+            if self.position_qty == 0 and self.fix_order is not None:
+                # 无仓位时撤掉修复单
+                cancel_order_ids = [self.fix_order['id']]
+                self.adapter.cancel_grid_orders(cancel_order_ids)
+                logger.info(f"无仓位，修复订单撤单: {self.fix_order}")
+                self.fix_order = None
                 
             
         except Exception as exc:
@@ -252,11 +250,63 @@ class OnlyMakerStrategy:
                     delta_bps = abs(o["price"] - self.mark_price) / self.mark_price * 10000
                     logger.info(f"当前卖单, 价格：{o["price"]}, bps：{delta_bps}")
                 logger.info(f"当前价格：{self.mark_price}, 持仓：{self.position_qty}, ATR：{self.current_atr}")
+                
+                # 仓位修复检查
+                positions = await self.adapter.get_positions()
+                pos = positions.get(self.cfg.symbol) or positions.get(self.cfg.symbol.replace("-", "/"))
+                if not pos:
+                    return
+                qty = pos.get("qty")
+                if qty is not None:
+                    self.position_qty = float(qty)
+                    
+                if self.position_qty != 0:
+                    if self.fix_order is not None:
+                        if self.fix_order['amount'] == qty:
+                            return
+                    cancel_order_ids = [self.fix_order['id']]
+                    self.adapter.cancel_grid_orders(cancel_order_ids)
+                    logger.info(f"原修复订单撤单: {self.fix_order}")
+                    
+                    await self._place_fix_order(pos)
+                    
+                if self.position_qty == 0 and self.fix_order is not None:
+                    # 无仓位时撤掉修复单
+                    cancel_order_ids = [self.fix_order['id']]
+                    self.adapter.cancel_grid_orders(cancel_order_ids)
+                    logger.info(f"无仓位，修复订单撤单: {self.fix_order}")
+                    self.fix_order = None
+                    
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.exception(f"订单同步任务异常: {exc}")
             await asyncio.sleep(30)
+            
+    async def _place_fix_order(self, pos: Dict[str, Any]):
+        entry_price = float(pos.get("entry_price"))
+        # 挂一个回本单，如果当前价格已过，则挂到当前价格附近，只挂maker单
+        is_ask = self.position_qty > 0
+        if is_ask:
+            # 卖单
+            if self.mark_price > entry_price:
+                entry_price = self.mark_price
+            target_price = entry_price * (1 + 0.0002)
+        else:
+            # 买单
+            if self.mark_price < entry_price:
+                entry_price = self.mark_price
+            target_price = entry_price * (1 - 0.0002)
+            
+        price = round(target_price, 2)
+        client_order_id = f"fix_{int(time.time() * 1000) % 1000000}"
+        success, order_id = await self.adapter.place_single_order(is_ask, price, self.cfg.order_size_btc, client_order_id)
+        if success:
+            order_info = {"id": order_id, "price": price}
+            self.fix_order = order_info
+            logger.info(f"修复订单挂单成功: {order_info}, size={self.cfg.order_size_btc}, 当前价格: {self.mark_price}")
+        else:
+            logger.warning(f"修复订单挂单失败: {order_info}, size={self.cfg.order_size_btc}")
 
     # ------------------------------------------------------------------
     # 核心逻辑
@@ -368,6 +418,54 @@ class OnlyMakerStrategy:
             price = self.mark_price * (1 + offset_bps / 10000) if is_ask else self.mark_price * (1 - offset_bps / 10000)
             targets.append(round(price, 2))
         return targets
+
+    # ------------------------------------------------------------------
+    # 市场数据监控
+    # ------------------------------------------------------------------
+    async def _market_stats_monitor_loop(self):
+        """监控市场数据更新，超过30秒未更新则重新连接WS。"""
+        while self._running:
+            try:
+                await asyncio.sleep(10)  # 每10秒检查一次
+                
+                if self.last_market_stats_time is None:
+                    continue
+                    
+                current_time = time.time()
+                time_since_last_update = current_time - self.last_market_stats_time
+                
+                if time_since_last_update > 30:
+                    logger.warning(f"市场数据超过30秒未更新，最后更新时间: {self.last_market_stats_time}, 当前时间: {current_time}")
+                    await self._reconnect_ws_and_resubscribe()
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception(f"市场数据监控任务异常: {exc}")
+
+    async def _reconnect_ws_and_resubscribe(self):
+        """重新连接WS并重新订阅。"""
+        try:
+            logger.info("开始重新连接WS并重新订阅...")
+            
+            # 关闭当前WS连接
+            await self.adapter.close()
+            
+            # 重新初始化客户端
+            await self.adapter.initialize_client()
+            
+            # 重新订阅
+            callbacks = {
+                "market_stats": self.on_market_stats,
+                "orders": self.on_orders,
+                "positions": self.on_positions,
+            }
+            await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
+            
+            logger.info("WS重新连接并订阅成功")
+            
+        except Exception as exc:
+            logger.exception(f"重新连接WS并重新订阅失败: {exc}")
 
     # ------------------------------------------------------------------
     # ATR 计算
