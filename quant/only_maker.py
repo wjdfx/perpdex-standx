@@ -28,6 +28,7 @@ class MakerConfig:
 
     max_orders_per_side: int  # 单侧同时间最大挂单数量
     side_order_gap_bps: float  # 单侧多笔挂单之间的间距（bps）
+    fix_order_enable: bool = False  # 是否启用仓位修复单
 
     atr_period: int = 14
     atr_resolution: str = "1m"
@@ -49,6 +50,7 @@ class MakerConfig:
             STANDX_MAKER_MAX_ATR,
             STANDX_MAKER_MAX_ORDERS_PER_SIDE,
             STANDX_MAKER_SIDE_ORDER_GAP_BPS,
+            STANDX_MAKER_FIX_ORDER_ENABLED,
         )
         return cls(
             symbol=STANDX_MAKER_SYMBOL,
@@ -60,6 +62,7 @@ class MakerConfig:
             max_atr=STANDX_MAKER_MAX_ATR,
             max_orders_per_side=STANDX_MAKER_MAX_ORDERS_PER_SIDE,
             side_order_gap_bps=STANDX_MAKER_SIDE_ORDER_GAP_BPS,
+            fix_order_enable=STANDX_MAKER_FIX_ORDER_ENABLED,
         )
 
 
@@ -171,9 +174,6 @@ class OnlyMakerStrategy:
             if qty is not None:
                 self.position_qty = float(qty)
             
-            if self.position_qty != 0:
-                await self._place_fix_order(pos)
-                
             if self.position_qty == 0 and self.fix_order is not None:
                 # 无仓位时撤掉修复单
                 cancel_order_ids = [self.fix_order['id']]
@@ -252,30 +252,31 @@ class OnlyMakerStrategy:
                 logger.info(f"当前价格：{self.mark_price}, 持仓：{self.position_qty}, ATR：{self.current_atr}")
                 
                 # 仓位修复检查
-                positions = await self.adapter.get_positions()
-                pos = positions.get(self.cfg.symbol) or positions.get(self.cfg.symbol.replace("-", "/"))
-                if not pos:
-                    return
-                qty = pos.get("qty")
-                if qty is not None:
-                    self.position_qty = float(qty)
-                    
-                if self.position_qty != 0:
-                    if self.fix_order is not None:
-                        if self.fix_order['amount'] == qty:
-                            return
+                if self.cfg.fix_order_enable:
+                    positions = await self.adapter.get_positions()
+                    pos = positions.get(self.cfg.symbol) or positions.get(self.cfg.symbol.replace("-", "/"))
+                    if not pos:
+                        return
+                    qty = pos.get("qty")
+                    if qty is not None:
+                        self.position_qty = float(qty)
+                        
+                    if self.position_qty != 0:
+                        if self.fix_order is not None:
+                            if self.fix_order['amount'] == qty:
+                                return
+                            cancel_order_ids = [self.fix_order['id']]
+                            self.adapter.cancel_grid_orders(cancel_order_ids)
+                            logger.info(f"原修复订单撤单: {self.fix_order}")
+                        
+                        await self._place_fix_order(pos)
+                        
+                    if self.position_qty == 0 and self.fix_order is not None:
+                        # 无仓位时撤掉修复单
                         cancel_order_ids = [self.fix_order['id']]
                         self.adapter.cancel_grid_orders(cancel_order_ids)
-                        logger.info(f"原修复订单撤单: {self.fix_order}")
-                    
-                    await self._place_fix_order(pos)
-                    
-                if self.position_qty == 0 and self.fix_order is not None:
-                    # 无仓位时撤掉修复单
-                    cancel_order_ids = [self.fix_order['id']]
-                    self.adapter.cancel_grid_orders(cancel_order_ids)
-                    logger.info(f"无仓位，修复订单撤单: {self.fix_order}")
-                    self.fix_order = None
+                        logger.info(f"无仓位，修复订单撤单: {self.fix_order}")
+                        self.fix_order = None
                     
             except asyncio.CancelledError:
                 break
