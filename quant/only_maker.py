@@ -177,7 +177,7 @@ class OnlyMakerStrategy:
             if self.position_qty == 0 and self.fix_order is not None:
                 # 无仓位时撤掉修复单
                 cancel_order_ids = [self.fix_order['id']]
-                self.adapter.cancel_grid_orders(cancel_order_ids)
+                await self.adapter.cancel_grid_orders(cancel_order_ids)
                 logger.info(f"无仓位，修复订单撤单: {self.fix_order}")
                 self.fix_order = None
                 
@@ -202,6 +202,13 @@ class OnlyMakerStrategy:
                     logger.debug(f"order: {order}")
                     client_order_id = str(order.get("clientOrderId"))
                     if not client_order_id.startswith("maker_"):
+                        if client_order_id.startswith("fix_"):
+                            # 修复单
+                            self.fix_order = {
+                                "id": order.get("id"),
+                                "price": float(order.get("price", 0)),
+                                "amount": float(order.get("amount", 0)),
+                            }
                         continue
                     symbol = (order.get("symbol") or "").replace("/", "-")
                     if symbol != self.cfg.symbol:
@@ -232,7 +239,7 @@ class OnlyMakerStrategy:
         """每 30 秒通过 REST 全量同步订单，防止 WS 漏单。"""
         # 首次启动延迟 30s 再拉取
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(20)
         except asyncio.CancelledError:
             return
 
@@ -263,10 +270,10 @@ class OnlyMakerStrategy:
                         
                     if self.position_qty != 0:
                         if self.fix_order is not None:
-                            if self.fix_order['amount'] == qty:
-                                return
+                            if self.fix_order['amount'] == abs(self.position_qty):
+                                continue
                             cancel_order_ids = [self.fix_order['id']]
-                            self.adapter.cancel_grid_orders(cancel_order_ids)
+                            await self.adapter.cancel_grid_orders(cancel_order_ids)
                             logger.info(f"原修复订单撤单: {self.fix_order}")
                         
                         await self._place_fix_order(pos)
@@ -274,7 +281,7 @@ class OnlyMakerStrategy:
                     if self.position_qty == 0 and self.fix_order is not None:
                         # 无仓位时撤掉修复单
                         cancel_order_ids = [self.fix_order['id']]
-                        self.adapter.cancel_grid_orders(cancel_order_ids)
+                        await self.adapter.cancel_grid_orders(cancel_order_ids)
                         logger.info(f"无仓位，修复订单撤单: {self.fix_order}")
                         self.fix_order = None
                     
@@ -282,7 +289,7 @@ class OnlyMakerStrategy:
                 break
             except Exception as exc:
                 logger.exception(f"订单同步任务异常: {exc}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(20)
             
     async def _place_fix_order(self, pos: Dict[str, Any]):
         entry_price = float(pos.get("entry_price"))
@@ -303,7 +310,7 @@ class OnlyMakerStrategy:
         client_order_id = f"fix_{int(time.time() * 1000) % 1000000}"
         success, order_id = await self.adapter.place_single_order(is_ask, price, self.position_qty, client_order_id)
         if success:
-            order_info = {"id": order_id, "price": price}
+            order_info = {"id": order_id, "price": price, "amount": self.position_qty}
             self.fix_order = order_info
             logger.info(f"修复订单挂单成功: {order_info}, size={self.position_qty}, 当前价格: {self.mark_price}")
         else:
