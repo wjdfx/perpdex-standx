@@ -301,13 +301,13 @@ class OnlyMakerStrategy:
             
         price = round(target_price, 2)
         client_order_id = f"fix_{int(time.time() * 1000) % 1000000}"
-        success, order_id = await self.adapter.place_single_order(is_ask, price, self.cfg.order_size_btc, client_order_id)
+        success, order_id = await self.adapter.place_single_order(is_ask, price, self.position_qty, client_order_id)
         if success:
             order_info = {"id": order_id, "price": price}
             self.fix_order = order_info
-            logger.info(f"修复订单挂单成功: {order_info}, size={self.cfg.order_size_btc}, 当前价格: {self.mark_price}")
+            logger.info(f"修复订单挂单成功: {order_info}, size={self.position_qty}, 当前价格: {self.mark_price}")
         else:
-            logger.warning(f"修复订单挂单失败: {order_info}, size={self.cfg.order_size_btc}")
+            logger.warning(f"修复订单挂单失败: {order_info}, size={self.position_qty}")
 
     # ------------------------------------------------------------------
     # 核心逻辑
