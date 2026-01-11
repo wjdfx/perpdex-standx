@@ -18,12 +18,12 @@ class MakerConfig:
     """
 
     symbol: str = "BTC-USD"
-    order_distance_bps: float = 8  # 挂单距离 mark_price 的 bps
-    cancel_distance_bps: float = 6  # 价格靠近到这个距离时撤单
+    order_distance_bps: float = 7  # 挂单距离 mark_price 的 bps
+    cancel_distance_bps: float = 5  # 价格靠近到这个距离时撤单
     rebalance_distance_bps: float = 10  # 价格远离超过这个距离时撤单重挂
-    order_size_btc: float = 0.001 # 每笔挂单数量
-    max_position_btc: float = 0.005  # 最大持仓，超过则不再挂单
-    max_atr: float = 100  # 1m, 14 周期 ATR 上限
+    order_size_btc: float = 0.01 # 每笔挂单数量
+    max_position_btc: float = 0.02  # 最大持仓，超过则不再挂单
+    max_atr: float = 60  # 1m, 14 周期 ATR 上限
 
     max_orders_per_side: int = 2  # 单侧同时间最大挂单数量
     side_order_gap_bps: float = 1  # 单侧多笔挂单之间的间距（bps）
@@ -148,7 +148,10 @@ class OnlyMakerStrategy:
         async with self._lock:
             bid_orders: List[Dict[str, Any]] = []
             ask_orders: List[Dict[str, Any]] = []
-
+            
+            if len(orders) == 0:
+                return
+            
             for order in orders or []:
                 try:
                     symbol = (order.get("symbol") or "").replace("/", "-")
