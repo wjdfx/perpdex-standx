@@ -263,10 +263,10 @@ class OnlyMakerStrategy:
                 if self.position_qty != 0:
                     if self.fix_order is not None:
                         if self.fix_order['amount'] == qty:
-                            return
-                    cancel_order_ids = [self.fix_order['id']]
-                    self.adapter.cancel_grid_orders(cancel_order_ids)
-                    logger.info(f"原修复订单撤单: {self.fix_order}")
+                            return˚
+                        cancel_order_ids = [self.fix_order['id']]
+                        self.adapter.cancel_grid_orders(cancel_order_ids)
+                        logger.info(f"原修复订单撤单: {self.fix_order}")
                     
                     await self._place_fix_order(pos)
                     
