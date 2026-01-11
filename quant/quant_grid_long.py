@@ -3,14 +3,12 @@ from common.config import (
     API_KEY_PRIVATE_KEY,
     ACCOUNT_INDEX,
     API_KEY_INDEX,
-    EXCHANGE_TYPE,
 )
 
 import logging
 from common.logging_config import setup_logging
 
 # 配置日志
-setup_logging()
 logger = logging.getLogger(__name__)
 
 import json
@@ -1375,30 +1373,32 @@ async def _get_current_pause_position() -> float:
 #######################################################
 
 
-async def run_grid_trading():
+async def run_grid_trading(_exchange_type: str = "lighter"):
     """
     运行网格交易系统
     """
     global trading_state
+    
+    setup_logging(_exchange_type)
 
     logger.info("🎯 启动网格交易系统")
     logger.info(f"配置参数: {GRID_CONFIG}")
-    logger.info(f"交易所类型: {EXCHANGE_TYPE}")
+    logger.info(f"交易所类型: {_exchange_type}")
 
     # 创建交易所适配器
     lighter_adapter = create_exchange_adapter(
-        exchange_type=EXCHANGE_TYPE, market_id=GRID_CONFIG["MARKET_ID"]
+        exchange_type=_exchange_type, market_id=GRID_CONFIG["MARKET_ID"]
     )
     grvt_adapter = create_exchange_adapter(
         exchange_type="grvt", symbol="ETH_USDT_Perp"
     )
-    if EXCHANGE_TYPE == "grvt":
+    if _exchange_type == "grvt":
         exchange = grvt_adapter
     else:
         exchange = lighter_adapter
         
     if exchange is None:
-        logger.exception(f"不支持的交易所类型: {EXCHANGE_TYPE}")
+        logger.exception(f"不支持的交易所类型: {type}")
         return
 
     # 初始化客户端

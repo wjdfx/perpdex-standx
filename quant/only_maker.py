@@ -200,6 +200,7 @@ class OnlyMakerStrategy:
                 for b in self.open_orders["ask"]:
                     delta_bps = abs(b["price"] - self.mark_price) / self.mark_price * 10000
                     logger.info(f"当前卖单bps：{delta_bps}")
+                logger.info(f"当前价格：{self.mark_price}, 持仓：{self.position_qty}, ATR：{self.current_atr}")
             except asyncio.CancelledError:
                 break
             except Exception as exc:
