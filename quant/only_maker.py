@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -17,16 +18,16 @@ class MakerConfig:
     全局可调参数
     """
 
-    symbol: str = "BTC-USD"
-    order_distance_bps: float = 8  # 挂单距离 mark_price 的 bps
-    cancel_distance_bps: float = 6  # 价格靠近到这个距离时撤单
-    rebalance_distance_bps: float = 10  # 价格远离超过这个距离时撤单重挂
-    order_size_btc: float = 0.01 # 每笔挂单数量
-    max_position_btc: float = 0.02  # 最大持仓，超过则不再挂单
-    max_atr: float = 60  # 1m, 14 周期 ATR 上限
+    symbol: str
+    order_distance_bps: float  # 挂单距离 mark_price 的 bps
+    cancel_distance_bps: float  # 价格靠近到这个距离时撤单
+    rebalance_distance_bps: float  # 价格远离超过这个距离时撤单重挂
+    order_size_btc: float  # 每笔挂单数量
+    max_position_btc: float  # 最大持仓，超过则不再挂单
+    max_atr: float  # 1m, 14 周期 ATR 上限
 
-    max_orders_per_side: int = 2  # 单侧同时间最大挂单数量
-    side_order_gap_bps: float = 1  # 单侧多笔挂单之间的间距（bps）
+    max_orders_per_side: int  # 单侧同时间最大挂单数量
+    side_order_gap_bps: float  # 单侧多笔挂单之间的间距（bps）
 
     atr_period: int = 14
     atr_resolution: str = "1m"
@@ -34,6 +35,32 @@ class MakerConfig:
     atr_refresh_sec: int = 60
 
     proxy: Optional[str] = None
+
+    @classmethod
+    def from_env(cls):
+        """从环境变量加载配置"""
+        from common.config import (
+            STANDX_MAKER_SYMBOL,
+            STANDX_MAKER_ORDER_DISTANCE_BPS,
+            STANDX_MAKER_CANCEL_DISTANCE_BPS,
+            STANDX_MAKER_REBALANCE_DISTANCE_BPS,
+            STANDX_MAKER_ORDER_SIZE_BTC,
+            STANDX_MAKER_MAX_POSITION_BTC,
+            STANDX_MAKER_MAX_ATR,
+            STANDX_MAKER_MAX_ORDERS_PER_SIDE,
+            STANDX_MAKER_SIDE_ORDER_GAP_BPS,
+        )
+        return cls(
+            symbol=STANDX_MAKER_SYMBOL,
+            order_distance_bps=STANDX_MAKER_ORDER_DISTANCE_BPS,
+            cancel_distance_bps=STANDX_MAKER_CANCEL_DISTANCE_BPS,
+            rebalance_distance_bps=STANDX_MAKER_REBALANCE_DISTANCE_BPS,
+            order_size_btc=STANDX_MAKER_ORDER_SIZE_BTC,
+            max_position_btc=STANDX_MAKER_MAX_POSITION_BTC,
+            max_atr=STANDX_MAKER_MAX_ATR,
+            max_orders_per_side=STANDX_MAKER_MAX_ORDERS_PER_SIDE,
+            side_order_gap_bps=STANDX_MAKER_SIDE_ORDER_GAP_BPS,
+        )
 
 
 class OnlyMakerStrategy:
@@ -115,7 +142,7 @@ class OnlyMakerStrategy:
     async def on_orders(self, account_id: str, orders: Any):
         """订单回调，更新本地 open_orders 状态。"""
         try:
-            logger.debug("on orders do nothing...")
+            logger.debug(f"on orders: {orders}")
         except Exception as exc:
             logger.exception(f"on_orders error: {exc}")
 
@@ -128,16 +155,35 @@ class OnlyMakerStrategy:
             pos = positions.get(self.cfg.symbol) or positions.get(self.cfg.symbol.replace("-", "/"))
             if not pos:
                 return
-            # 尝试识别数量字段
-            qty = (
-                pos.get("position_qty")
-                or pos.get("qty")
-                or pos.get("size")
-                or pos.get("position")
-                or pos.get("current_qty")
-            )
+            qty = pos.get("qty")
             if qty is not None:
                 self.position_qty = float(qty)
+            
+            if self.position_qty != 0:
+                entry_price = float(pos.get("entry_price"))
+                # 挂一个回本单，如果当前价格已过，则挂到当前价格附近，只挂maker单
+                is_ask = self.position_qty > 0
+                if is_ask:
+                    # 卖单
+                    if self.mark_price > entry_price:
+                        entry_price = self.mark_price
+                    target_price = entry_price * (1 + 0.0002)
+                else:
+                    # 买单
+                    if self.mark_price < entry_price:
+                        entry_price = self.mark_price
+                    target_price = entry_price * (1 - 0.0002)
+                    
+                price = round(target_price, 2)
+                client_order_id = f"fix_{int(time.time() * 1000) % 1000000}"
+                success, order_id = await self.adapter.place_single_order(is_ask, price, self.cfg.order_size_btc, client_order_id)
+                if success:
+                    order_info = {"id": order_id, "price": price}
+                    logger.info(f"修复订单挂单成功: {order_info}, size={self.cfg.order_size_btc}, 当前价格: {self.mark_price}")
+                else:
+                    logger.warning(f"修复订单挂单失败: {order_info}, size={self.cfg.order_size_btc}")
+                
+            
         except Exception as exc:
             logger.exception(f"on_positions error: {exc}")
 
@@ -155,6 +201,10 @@ class OnlyMakerStrategy:
             
             for order in orders or []:
                 try:
+                    logger.debug(f"order: {order}")
+                    client_order_id = str(order.get("clientOrderId"))
+                    if not client_order_id.startswith("maker_"):
+                        continue
                     symbol = (order.get("symbol") or "").replace("/", "-")
                     if symbol != self.cfg.symbol:
                         continue
@@ -283,13 +333,14 @@ class OnlyMakerStrategy:
             if len(existing) >= self.cfg.max_orders_per_side:
                 break
 
-            expected_pos = self.position_qty + side_sign * (len(existing) + 1)
-            if abs(expected_pos) > self.cfg.max_position_btc:
-                logger.info(f"{side} 不挂单，预期持仓超限: expected_pos={expected_pos}")
-                break
+            # expected_pos = self.position_qty + side_sign * (len(existing) + 1)
+            # if abs(expected_pos) > self.cfg.max_position_btc:
+            #     logger.info(f"{side} 不挂单，预期持仓超限: expected_pos={expected_pos}")
+            #     break
 
             price = round(target_price, 2)
-            success, order_id = await self.adapter.place_single_order(is_ask, price, self.cfg.order_size_btc)
+            client_order_id = f"maker_{int(time.time() * 1000) % 1000000}"
+            success, order_id = await self.adapter.place_single_order(is_ask, price, self.cfg.order_size_btc, client_order_id)
             if success:
                 order_info = {"id": order_id, "price": price}
                 existing.append(order_info)
@@ -378,7 +429,7 @@ class OnlyMakerStrategy:
 async def main():
     from common.logging_config import setup_logging
 
-    setup_logging("standx")
+    setup_logging("only_maker")
 
     adapter = StandXAdapter(
         market_id=1,
@@ -387,7 +438,7 @@ async def main():
         chain="bsc",
     )
 
-    config = MakerConfig()
+    config = MakerConfig.from_env()
     strategy = OnlyMakerStrategy(adapter, config)
 
     await strategy.start()

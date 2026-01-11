@@ -378,14 +378,15 @@ class StandXAdapter(ExchangeInterface):
             logger.error(f"place_multi_orders error: {e}")
             return False, []
 
-    async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
+    async def place_single_order(self, is_ask: bool, price: float, amount: float, client_order_id: str = None) -> Tuple[bool, str]:
         """
         Place single limit order.
         Returns: (success, order_id)
         """
         try:
             # Generate client order ID
-            client_order_id = f"standx_{int(time.time() * 1000) % 1000000}"
+            if client_order_id is None:
+                client_order_id = f"standx_{int(time.time() * 1000) % 1000000}"
             
             # Prepare order payload
             payload = {
