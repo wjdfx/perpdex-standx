@@ -376,7 +376,7 @@ class OnlyMakerStrategy:
 async def main():
     from common.logging_config import setup_logging
 
-    setup_logging()
+    setup_logging("standx")
 
     adapter = StandXAdapter(
         market_id=1,
