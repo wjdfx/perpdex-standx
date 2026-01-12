@@ -20,7 +20,7 @@ class MakerConfig:
 
     symbol: str
     order_distance_bps: float  # 挂单距离 mark_price 的 bps
-    cancel_distance_bps: float  # 价格靠近到这个距离时撤单
+    cancel_distance_bps: float  # 价格靠近到这个距离时撤单重挂
     rebalance_distance_bps: float  # 价格远离超过这个距离时撤单重挂
     order_size_btc: float  # 每笔挂单数量
     max_position_btc: float  # 最大持仓，超过则不再挂单
@@ -270,14 +270,15 @@ class OnlyMakerStrategy:
                         
                     if self.position_qty != 0:
                         if self.fix_order is not None:
-                            if self.fix_order['amount'] == abs(self.position_qty):
+                            if abs(self.fix_order['amount']) == abs(self.position_qty):
                                 logger.info(f"已有正确的修复订单，跳过修复")
-                                break
-                            cancel_order_ids = [self.fix_order['id']]
-                            await self.adapter.cancel_grid_orders(cancel_order_ids)
-                            logger.info(f"原修复订单撤单: {self.fix_order}")
-                        
-                        await self._place_fix_order(pos)
+                            else:
+                                cancel_order_ids = [self.fix_order['id']]
+                                await self.adapter.cancel_grid_orders(cancel_order_ids)
+                                logger.info(f"原修复订单撤单: {self.fix_order}")
+                                await self._place_fix_order(pos)
+                        else:
+                            await self._place_fix_order(pos)
                         
                     if self.position_qty == 0 and self.fix_order is not None:
                         # 无仓位时撤掉修复单
