@@ -150,7 +150,7 @@ class OnlyMakerStrategy:
             self.mark_price = float(mark_price)
             self.last_market_stats_time = time.time()
             logger.debug(f"当前价格：{mark_price}")
-            await self._reconcile_orders()
+            # await self._reconcile_orders()
         except Exception as exc:
             logger.exception(f"on_market_stats error: {exc}")
 
@@ -271,6 +271,7 @@ class OnlyMakerStrategy:
                     if self.position_qty != 0:
                         if self.fix_order is not None:
                             if self.fix_order['amount'] == abs(self.position_qty):
+                                logger.info(f"已有正确的修复订单，跳过修复")
                                 break
                             cancel_order_ids = [self.fix_order['id']]
                             await self.adapter.cancel_grid_orders(cancel_order_ids)
@@ -447,28 +448,34 @@ class OnlyMakerStrategy:
                 logger.exception(f"市场数据监控任务异常: {exc}")
 
     async def _reconnect_ws_and_resubscribe(self):
-        """重新连接WS并重新订阅。"""
-        try:
-            logger.info("开始重新连接WS并重新订阅...")
-            
-            # 关闭当前WS连接
-            await self.adapter.close()
-            
-            # 重新初始化客户端
-            await self.adapter.initialize_client()
-            
-            # 重新订阅
-            callbacks = {
-                "market_stats": self.on_market_stats,
-                "orders": self.on_orders,
-                "positions": self.on_positions,
-            }
-            await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
-            
-            logger.info("WS重新连接并订阅成功")
-            
-        except Exception as exc:
-            logger.exception(f"重新连接WS并重新订阅失败: {exc}")
+            """重新连接WS并重新订阅。"""
+            try:
+                logger.info("开始重新连接WS并重新订阅...")
+                
+                # 关闭当前WS连接
+                await self.adapter.close()
+                
+                # 重新初始化客户端
+                await self.adapter.initialize_client()
+                
+                # 重新订阅 - 确保完全重新初始化WebSocket
+                callbacks = {
+                    "market_stats": self.on_market_stats,
+                    "orders": self.on_orders,
+                    "positions": self.on_positions,
+                }
+                await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
+                
+                # 等待WebSocket连接准备就绪
+                if hasattr(self.adapter, '_wait_for_market_ws'):
+                    ws_ready = await self.adapter._wait_for_market_ws(timeout=15.0)
+                    if not ws_ready:
+                        logger.warning("重连后WebSocket未能及时准备就绪")
+                
+                logger.info("WS重新连接并订阅成功")
+                
+            except Exception as exc:
+                logger.exception(f"重新连接WS并重新订阅失败: {exc}")
 
     # ------------------------------------------------------------------
     # ATR 计算

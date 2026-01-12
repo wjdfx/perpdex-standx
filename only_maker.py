@@ -1,6 +1,6 @@
-import quant.only_maker as only_maker
+import quant.standx_maker as standx_maker
 import asyncio
 
 
 if __name__ == "__main__":
-    asyncio.run(only_maker.main())
+    asyncio.run(standx_maker.main())

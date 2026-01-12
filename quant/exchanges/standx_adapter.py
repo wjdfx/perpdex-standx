@@ -1147,24 +1147,32 @@ class StandXAdapter(ExchangeInterface):
             logger.warning(f"Order response error for request {request_id}: {message.get('message')}")
 
     async def close(self):
-        """
-        Close connections."""
-        try:
-            # Close WebSocket connections
-            if self.ws_task and not self.ws_task.done():
-                self.ws_task.cancel()
-                try:
-                    await self.ws_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # Close HTTP session
-            if self.session:
-                await self.session.close()
+            """
+            Close connections."""
+            try:
+                # Close WebSocket connections
+                if self.ws_task and not self.ws_task.done():
+                    self.ws_task.cancel()
+                    try:
+                        await self.ws_task
+                    except asyncio.CancelledError:
+                        pass
                 
-            logger.info("StandX connections closed")
-        except Exception as e:
-            logger.error(f"Error closing connections: {e}")
+                # Reset WebSocket state flags
+                self.ws_initialized = False
+                self.ws_market_authed = False
+                self.ws_market_ready.clear()
+                self.ws_market_client = None
+                self.ws_order_client = None
+                self.ws_task = None
+                
+                # Close HTTP session
+                if self.session:
+                    await self.session.close()
+                     
+                logger.info("StandX connections closed")
+            except Exception as e:
+                logger.error(f"Error closing connections: {e}")
 
     async def initialize_client(self) -> None:
         """

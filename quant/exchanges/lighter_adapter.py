@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 import aiohttp
 import pandas as pd
@@ -10,6 +11,8 @@ from ..ws_client import create_unified_client
 from common.config import BASE_URL
 from .interfaces import ExchangeInterface
 from .order_converter import normalize_order_to_ccxt, normalize_orders_list
+
+logger = logging.getLogger(__name__)
 
 class LighterAdapter(ExchangeInterface):
     def __init__(
@@ -72,7 +75,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return True, order_ids
         except Exception as e:
-            print(f"place_multi_orders error: {e}")
+            logger.error(f"place_multi_orders error: {e}")
             return False, []
 
     async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
@@ -102,7 +105,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return True, str(order_id)
         except Exception as e:
-            print(f"place_single_order error: {e}")
+            logger.error(f"place_single_order error: {e}")
             return False, ''
 
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
@@ -134,7 +137,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return True, str(order_id)
         except Exception as e:
-            print(f"place_single_market_order error: {e}")
+            logger.error(f"place_single_market_order error: {e}")
             return False, ''
 
     async def cancel_grid_orders(self, order_ids: List[str]) -> bool:
@@ -162,7 +165,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return True
         except Exception as e:
-            print(f"cancel_grid_orders error: {e}")
+            logger.error(f"cancel_grid_orders error: {e}")
             return False
 
     async def modify_grid_order(self, order_id: str, new_price: float, new_amount: float) -> bool:
@@ -186,7 +189,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return True
         except Exception as e:
-            print(f"modify_grid_order error: {e}")
+            logger.error(f"modify_grid_order error: {e}")
             return False
 
     async def get_orders(self) -> List[dict]:
@@ -205,7 +208,7 @@ class LighterAdapter(ExchangeInterface):
                 return [normalize_order_to_ccxt(order) for order in lighter_orders]
             return []
         except Exception as e:
-            print(f"get_orders error: {e}")
+            logger.error(f"get_orders error: {e}")
             return []
 
     async def get_trades(self, limit: int = 1) -> List[dict]:
@@ -223,7 +226,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return [trade.__dict__ for trade in trades_resp.trades] if trades_resp.code == CODE_OK else []
         except Exception as e:
-            print(f"get_trades error: {e}")
+            logger.error(f"get_trades error: {e}")
             return []
 
     async def get_positions(self) -> Dict[str, dict]:
@@ -236,7 +239,7 @@ class LighterAdapter(ExchangeInterface):
                 positions[str(pos.market_index)] = pos.__dict__
             return positions
         except Exception as e:
-            print(f"get_positions error: {e}")
+            logger.error(f"get_positions error: {e}")
             return {}
 
     async def candle_stick(self, market_id: int, resolution: str, count_back: int = 200) -> pd.DataFrame:
@@ -257,7 +260,7 @@ class LighterAdapter(ExchangeInterface):
                 async with session.get(url, params=params, headers=headers) as resp:
                     data = await resp.json()
                     if data.get('code') != 200:
-                        print(f'candle_stick error: {data}')
+                        logger.error(f'candle_stick error: {data}')
                         return pd.DataFrame()
                     candlesticks = data['c']
                     candle_data = [{'time': c['t'], 'open': c['o'], 'high': c['h'], 'low': c['l'], 'close': c['c'], 'volume': c['v']} for c in candlesticks]
@@ -265,14 +268,14 @@ class LighterAdapter(ExchangeInterface):
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     return df
         except Exception as e:
-            print(f'candle_stick error: {e}')
+            logger.error(f'candle_stick error: {e}')
             return pd.DataFrame()
 
     async def subscribe(self, callbacks: Dict[str, Callable[[str, Any], None]], proxy: str = None) -> None:
         self.callbacks = callbacks
         auth, err = self.signer_client.create_auth_token_with_expiry()
         if err:
-            print(f'subscribe auth error: {err}')
+            logger.error(f'subscribe auth error: {err}')
             return
         self.ws_client = create_unified_client(
             auth_token=auth,
@@ -307,7 +310,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return True
         except Exception as e:
-            print(f"modify_order error: {e}")
+            logger.error(f"modify_order error: {e}")
             return False
 
     async def get_orders_by_rest(self) -> List[dict]:
@@ -322,7 +325,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return [order.__dict__ for order in orders_resp.orders] if orders_resp.code == CODE_OK else []
         except Exception as e:
-            print(f"get_orders_by_rest error: {e}")
+            logger.error(f"get_orders_by_rest error: {e}")
             return []
 
     async def get_trades_by_rest(self, ask_filter: int, limit: int) -> List[dict]:
@@ -340,7 +343,7 @@ class LighterAdapter(ExchangeInterface):
             )
             return [trade.__dict__ for trade in trades_resp.trades] if trades_resp.code == CODE_OK else []
         except Exception as e:
-            print(f"get_trades_by_rest error: {e}")
+            logger.error(f"get_trades_by_rest error: {e}")
             return []
 
     async def get_account(self) -> dict:
@@ -350,7 +353,7 @@ class LighterAdapter(ExchangeInterface):
                 return {}
             return account_resp.accounts[0].__dict__ if account_resp.accounts else {}
         except Exception as e:
-            print(f"get_account error: {e}")
+            logger.error(f"get_account error: {e}")
             return {}
 
     async def close(self):
@@ -377,9 +380,23 @@ class LighterAdapter(ExchangeInterface):
                 return {}
             account = account_resp.accounts[0]
             account_dict = account.__dict__.copy()
+            print(account.positions)
             # Convert positions to dict with market_index as key
-            account_dict['positions'] = {str(pos.market_index): pos.__dict__ for pos in account.positions}
+            account_dict['positions'] = {str(pos.market_id): pos.__dict__ for pos in account.positions}
             return account_dict
         except Exception as e:
-            print(f"get_account_info error: {e}")
+            logger.error(f"get_account_info error: {e}")
             return {}
+        
+
+async def test():
+    from . import create_exchange_adapter
+    lighter_adapter = create_exchange_adapter(
+        exchange_type="lighter", market_id=0
+    )
+    account_info = await lighter_adapter.get_account_info()
+    print(account_info)
+    
+if __name__ == "__main__":
+    asyncio.run(test())
+    
