@@ -33,7 +33,7 @@ class MakerConfig:
     atr_period: int = 14
     atr_resolution: str = "1m"
     atr_count_back: int = 100
-    atr_refresh_sec: int = 60
+    atr_refresh_sec: int = 30
 
     proxy: Optional[str] = None
 
@@ -325,11 +325,6 @@ class OnlyMakerStrategy:
             if self.mark_price is None:
                 return
 
-            # 风控：ATR、仓位
-            if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
-                logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}")
-                await self.cancel_all()
-                return
             if abs(self.position_qty) >= self.cfg.max_position_btc:
                 logger.info("持仓超限，撤单并暂停挂单")
                 await self.cancel_all()
@@ -491,6 +486,11 @@ class OnlyMakerStrategy:
                     if not atr_series.empty:
                         self.current_atr = float(atr_series.iloc[-1])
                         logger.info(f"ATR 更新: {self.current_atr:.4f}")
+                        
+                # 风控：ATR、仓位
+                if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
+                    logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}")
+                    await self.cancel_all()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
