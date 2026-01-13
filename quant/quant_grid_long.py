@@ -25,18 +25,8 @@ from typing import Deque
 from common.sqlite import init_db, insert
 
 
-# 网格交易参数配置
-GRID_CONFIG = {
-    "GRID_COUNT": 3,  # 每侧网格数量
-    "GRID_AMOUNT": 0.01,  # 单网格挂单量
-    "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
-    "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
-    "MAX_POSITION": 1.0,  # 最大仓位限制
-    "DECREASE_POSITION": 0.35,  # 降低仓位触发点
-    "ALER_POSITION": 0.3,  # 警告仓位限制
-    "MARKET_ID": 0,  # 市场ID
-    "ATR_THRESHOLD": 7,  # ATR波动阈值
-}
+# 网格交易参数配置（将在run_grid_trading函数中传入）
+GRID_CONFIG = None
 
 
 # 全局状态
@@ -1373,13 +1363,18 @@ async def _get_current_pause_position() -> float:
 #######################################################
 
 
-async def run_grid_trading(_exchange_type: str = "lighter"):
+async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = None):
     """
     运行网格交易系统
     """
-    global trading_state
+    global trading_state, GRID_CONFIG
     
     setup_logging(_exchange_type)
+
+    # 设置网格配置
+    if grid_config is None:
+        raise ValueError("Grid configuration must be provided")
+    GRID_CONFIG = grid_config
 
     logger.info("🎯 启动网格交易系统")
     logger.info(f"配置参数: {GRID_CONFIG}")

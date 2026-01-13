@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 import time
 from dataclasses import dataclass
@@ -209,6 +210,7 @@ class OnlyMakerStrategy:
             if len(orders) == 0:
                 return
             
+            self.fix_order = None
             for order in orders or []:
                 try:
                     logger.debug(f"order: {order}")
@@ -574,11 +576,20 @@ async def main():
     from common.logging_config import setup_logging
 
     setup_logging("only_maker")
-
+    
+    if not os.path.exists("keystore") or not os.listdir("keystore"):
+        print("请将keystore文件，放入到项目根目录下: keystore/xxx.json")
+        return
+    
+    keystore_files = [f for f in os.listdir("keystore") if f.startswith('UTC--') and f.endswith('.json')]
+    if keystore_files:
+        keystore_path = os.path.join("keystore", keystore_files[0])
+        print(f"读取到 keystore 文件: {keystore_path}")
+    
     adapter = StandXAdapter(
         market_id=1,
         wallet_address=None,
-        private_key=None,
+        keystore_path=keystore_path,
         chain="bsc",
     )
 

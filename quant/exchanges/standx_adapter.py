@@ -41,15 +41,30 @@ class StandXAdapter(ExchangeInterface):
         symbol: str = None,
         private_key: str = None,
         wallet_address: str = None,
-        chain: str = "bsc"
+        chain: str = "bsc",
+        keystore_path: str = None,
+        keystore_password: str = None
     ):
         self.market_id = market_id
         self.symbol = symbol or self.MARKET_ID_TO_SYMBOL.get(market_id, "BTC-USD")
         self.chain = chain
-        self.wallet_address = self._normalize_wallet_address(
-            wallet_address or os.getenv('STANDX_WALLET_ADDRESS', '')
+        
+        # Handle private key loading with keystore support first
+        self.private_key = self._load_private_key(
+            private_key=private_key,
+            keystore_path=keystore_path,
+            keystore_password=keystore_password
         )
-        self.private_key = private_key or os.getenv('STANDX_PRIVATE_KEY', '')
+        
+        # Set wallet address: use provided address, env variable, or extract from private key
+        provided_wallet_address = wallet_address or os.getenv('STANDX_WALLET_ADDRESS', '')
+        if provided_wallet_address:
+            self.wallet_address = self._normalize_wallet_address(provided_wallet_address)
+        elif self.private_key:
+            # Extract wallet address from private key if not explicitly provided
+            self.wallet_address = self._extract_wallet_address_from_private_key()
+        else:
+            self.wallet_address = ''
 
         # Generate Ed25519 key pair and requestId
         self.ed25519_private_key, self.ed25519_public_key, self.request_id = self._generate_ed25519_key_pair()
@@ -127,6 +142,92 @@ class StandXAdapter(ExchangeInterface):
         except Exception as exc:
             logger.warning(f"Wallet address not checksummed ({exc}); using raw address")
             return address
+
+    def _load_private_key(self, private_key: str = None, keystore_path: str = None, keystore_password: str = None) -> str:
+        """
+        Load private key from various sources with priority:
+        1. Direct private_key parameter
+        2. Environment variable STANDX_PRIVATE_KEY
+        3. Keystore file (with password prompt if needed)
+        
+        Args:
+            private_key: Direct private key string
+            keystore_path: Path to keystore file
+            keystore_password: Password for keystore decryption
+        
+        Returns:
+            Hex-encoded private key string
+        """
+        # Priority 1: Direct private key parameter
+        if private_key:
+            return private_key
+        
+        # Priority 2: Environment variable
+        env_private_key = os.getenv('STANDX_PRIVATE_KEY', '')
+        if env_private_key:
+            return env_private_key
+        
+        # Priority 3: Keystore file
+        if keystore_path or os.getenv('STANDX_KEYSTORE_PATH'):
+            try:
+                # Import the keystore loading function
+                from eth_keystore import load_private_key_from_keystore
+                
+                # Use provided keystore path or environment variable
+                final_keystore_path = keystore_path or os.getenv('STANDX_KEYSTORE_PATH')
+                
+                # Use provided password or prompt if needed
+                final_password = keystore_password
+                if not final_password:
+                    # Try environment variable first
+                    final_password = os.getenv('STANDX_KEYSTORE_PASSWORD')
+                
+                logger.info(f"Loading private key from keystore: {final_keystore_path}")
+                loaded_private_key = load_private_key_from_keystore(
+                    keystore_path=final_keystore_path,
+                    password=final_password
+                )
+                
+                logger.info("Successfully loaded private key from keystore")
+                return loaded_private_key
+                
+            except ImportError:
+                logger.error("eth_keystore module not found. Install required dependencies.")
+                raise
+            except Exception as e:
+                logger.error(f"Failed to load private key from keystore: {e}")
+                raise
+        
+        # Fallback: Empty string if no source available
+        logger.warning("No private key source available (private_key, STANDX_PRIVATE_KEY, or keystore)")
+        return ''
+
+    def _extract_wallet_address_from_private_key(self) -> str:
+        """
+        Extract wallet address from the loaded private key.
+        
+        Returns:
+            Checksummed wallet address string
+        """
+        if not self.private_key:
+            return ''
+        
+        try:
+            private_key_hex = self.private_key[2:] if self.private_key.startswith('0x') else self.private_key
+            private_key_bytes = bytes.fromhex(private_key_hex)
+            
+            from eth_account import Account
+            account = Account.from_key(private_key_bytes)
+            wallet_address = account.address
+            
+            return self._normalize_wallet_address(wallet_address)
+            
+        except ImportError:
+            logger.warning("eth_account not available, cannot extract wallet address from private key")
+            return ''
+        except Exception as e:
+            logger.warning(f"Failed to extract wallet address from private key: {e}")
+            return ''
 
     def _get_symbol_for_market_id(self, market_id: int) -> str:
         """Get StandX symbol for given market_id."""
