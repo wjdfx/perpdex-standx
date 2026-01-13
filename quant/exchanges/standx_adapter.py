@@ -48,14 +48,14 @@ class StandXAdapter(ExchangeInterface):
         self.market_id = market_id
         self.symbol = symbol or self.MARKET_ID_TO_SYMBOL.get(market_id, "BTC-USD")
         self.chain = chain
-        
+
         # Handle private key loading with keystore support first
         self.private_key = self._load_private_key(
             private_key=private_key,
             keystore_path=keystore_path,
             keystore_password=keystore_password
         )
-        
+
         # Set wallet address: use provided address, env variable, or extract from private key
         provided_wallet_address = wallet_address or os.getenv('STANDX_WALLET_ADDRESS', '')
         if provided_wallet_address:
@@ -74,29 +74,32 @@ class StandXAdapter(ExchangeInterface):
         self.base_url = "https://perps.standx.com"
         self.api_url = f"{self.base_url}/api"
         self.auth_url = "https://api.standx.com/v1/offchain"
-        
+
         # WebSocket URLs
         self.ws_market_url = "wss://perps.standx.com/ws-stream/v1"
         self.ws_order_url = "wss://perps.standx.com/ws-api/v1"
-        
+
         # HTTP session
         self.session = None
         self.auth_token = None
         self.session_id = None
-        
+
         # WebSocket clients
         self.ws_market_client = None
         self.ws_order_client = None
         self.ws_task = None
         self.ws_market_ready = asyncio.Event()
         self.ws_market_authed = False
-        
+        self.ws_order_ready = asyncio.Event()
+        self.ws_order_authed = asyncio.Event()
+        self.pending_order_futures: Dict[str, asyncio.Future] = {}
+
         self.callbacks: Dict[str, Callable] = {}
         self.ws_initialized = False
-        
+
         # Initialize HTTP session
         self._initialize_http_session()
-        
+
         logger.info(f"StandX Adapter initialized with symbol={self.symbol}, chain={self.chain}")
         logger.info(f"Generated Ed25519 key pair with requestId: {self.request_id}")
 
@@ -413,6 +416,7 @@ class StandXAdapter(ExchangeInterface):
                      return data
          except Exception as e:
              logger.error(f"Request to {url} failed: {e}")
+             self.initialize_client()
              return {"code": -1, "message": str(e)}
 
     async def _generate_body_signature(self, payload: dict) -> Dict[str, str]:
@@ -481,15 +485,13 @@ class StandXAdapter(ExchangeInterface):
 
     async def place_single_order(self, is_ask: bool, price: float, amount: float, client_order_id: str = None) -> Tuple[bool, str]:
         """
-        Place single limit order.
+        Place single limit order via StandX WS order:new。
         Returns: (success, order_id)
         """
         try:
-            # Generate client order ID
             if client_order_id is None:
                 client_order_id = f"standx_{int(time.time() * 1000) % 1000000}"
-            
-            # Prepare order payload
+
             payload = {
                 "symbol": self.symbol,
                 "side": "sell" if is_ask else "buy",
@@ -500,33 +502,19 @@ class StandXAdapter(ExchangeInterface):
                 "reduce_only": False,
                 "cl_ord_id": client_order_id
             }
-            
-            # Generate body signature
+
             body_signature = await self._generate_body_signature(payload)
-            
-            # Make the request (with signature)
-            response = await self._make_authenticated_request(
-                "POST",
-                "/new_order",
-                json=payload,
-                body_signature=body_signature
+            response = await self._send_order_ws_request(
+                "order:new",
+                payload,
+                header=body_signature
             )
 
-            # If body signature is rejected, retry without signature as fallback
-            if isinstance(response, dict) and response.get("code") == 403 and "invalid body signature" in str(response):
-                logger.warning("Body signature rejected, retrying order without signature")
-                response = await self._make_authenticated_request(
-                    "POST",
-                    "/new_order",
-                    json=payload
-                )
-
-            # Check for success - some endpoints return code, others return different structures
-            if isinstance(response, dict) and (response.get("code") == 0 or response.get("s") == "ok"):
-                logger.debug(f"Order placed successfully: {client_order_id}")
+            if isinstance(response, dict) and response.get("code") == 0:
+                logger.debug(f"Order placed successfully via WS: {client_order_id}")
                 return True, client_order_id
             else:
-                logger.error(f"Failed to create order: {response}")
+                logger.error(f"Failed to create order via WS: {response}")
                 return False, ''
         except Exception as e:
             logger.error(f"place_single_order error: {e}")
@@ -534,13 +522,11 @@ class StandXAdapter(ExchangeInterface):
 
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
         """
-        Place single market order.
+        Place single market order via StandX WS order:new。
         """
         try:
-            # Generate client order ID
             client_order_id = f"standx_mkt_{int(time.time() * 1000) % 1000000}"
-            
-            # Prepare order payload
+
             payload = {
                 "symbol": self.symbol,
                 "side": "sell" if is_ask else "buy",
@@ -550,24 +536,19 @@ class StandXAdapter(ExchangeInterface):
                 "reduce_only": False,
                 "cl_ord_id": client_order_id
             }
-            
-            # Generate body signature
+
             body_signature = await self._generate_body_signature(payload)
-            
-            # Make the request
-            response = await self._make_authenticated_request(
-                "POST",
-                "/new_order",
-                json=payload,
-                body_signature=body_signature
+            response = await self._send_order_ws_request(
+                "order:new",
+                payload,
+                header=body_signature
             )
-            
-            # Check for success - some endpoints return code, others return different structures
-            if isinstance(response, dict) and (response.get("code") == 0 or response.get("s") == "ok"):
-                logger.info(f"Market order placed successfully: {client_order_id}")
+
+            if isinstance(response, dict) and response.get("code") == 0:
+                logger.info(f"Market order placed successfully via WS: {client_order_id}")
                 return True, client_order_id
             else:
-                logger.error(f"Failed to create market order: {response}")
+                logger.error(f"Failed to create market order via WS: {response}")
                 return False, ''
         except Exception as e:
             logger.error(f"place_single_market_order error: {e}")
@@ -575,47 +556,26 @@ class StandXAdapter(ExchangeInterface):
 
     async def cancel_grid_orders(self, order_ids: List[str]) -> bool:
         """
-        Batch cancel orders.
+        Cancel orders via StandX WS order:cancel（逐单发送，兼容原批量接口）。
         """
         if not order_ids:
             logger.warning("cancel_grid_orders: No order_ids provided")
             return True
-        
-        try:
-            # StandX supports batch cancellation
-            payload = {
-                "cl_ord_id_list": order_ids
-            }
-            
-            # Generate body signature
-            body_signature = await self._generate_body_signature(payload)
-            
-            # Make the request with signature
-            response = await self._make_authenticated_request(
-                "POST",
-                "/cancel_orders",
-                json=payload,
-                body_signature=body_signature
-            )
 
-            if isinstance(response, dict) and response.get("code") == 403 and "invalid body signature" in str(response):
-                logger.warning("Cancel orders body signature rejected, retrying without signature")
-                response = await self._make_authenticated_request(
-                    "POST",
-                    "/cancel_orders",
-                    json=payload
+        try:
+            for cl_ord_id in order_ids:
+                payload = {"cl_ord_id": cl_ord_id}
+                body_signature = await self._generate_body_signature(payload)
+                response = await self._send_order_ws_request(
+                    "order:cancel",
+                    payload,
+                    header=body_signature
                 )
-            
-            # Cancel multiple orders returns empty array on success according to docs
-            if isinstance(response, list) and len(response) == 0:
-                logger.debug(f"Successfully cancelled {len(order_ids)} orders")
-                return True
-            elif isinstance(response, dict) and response.get("code") == 0:
-                logger.info(f"Successfully cancelled {len(order_ids)} orders")
-                return True
-            else:
-                logger.error(f"Failed to cancel orders: {response}")
-                return False
+                if not (isinstance(response, dict) and response.get("code") == 0):
+                    logger.error(f"Failed to cancel order {cl_ord_id} via WS: {response}")
+                    return False
+            logger.info(f"Successfully cancelled {len(order_ids)} orders via WS")
+            return True
         except Exception as e:
             logger.error(f"cancel_grid_orders error: {e}")
             return False
@@ -1082,10 +1042,29 @@ class StandXAdapter(ExchangeInterface):
             logger.error(f"向 Market WS 发送认证消息失败: {e}")
             return False
 
+    async def _wait_for_order_ws(self, timeout: float = 10.0) -> bool:
+        """等待订单 WebSocket 就绪。"""
+        try:
+            await asyncio.wait_for(self.ws_order_ready.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            logger.error("Order WS 未在超时时间内准备就绪")
+            return False
+
+    async def _ensure_order_ws(self):
+        """确保订单 WS 已连接并完成认证。"""
+        if self.ws_order_client and not self.ws_order_client.closed:
+            if not self.ws_order_authed.is_set() and self.auth_token:
+                await asyncio.wait_for(self.ws_order_authed.wait(), timeout=10)
+            return
+
+        await self._initialize_order_ws()
+        await self._wait_for_order_ws()
+        await asyncio.wait_for(self.ws_order_authed.wait(), timeout=10)
+
     async def _initialize_order_ws(self):
         """Initialize order response WebSocket."""
         try:
-            # Generate session ID for order response stream
             import uuid
             self.session_id = str(uuid.uuid4())
 
@@ -1095,6 +1074,15 @@ class StandXAdapter(ExchangeInterface):
                         self.ws_order_url,
                         heartbeat=30
                     ) as ws:
+                        self.ws_order_client = ws
+                        self.ws_order_ready.set()
+                        self.ws_order_authed.clear()
+
+                        # 确保有 token
+                        if not await self._ensure_authenticated():
+                            logger.error("Order WS 无法获取认证 token")
+                            return
+
                         # Authenticate
                         auth_msg = {
                             "session_id": self.session_id,
@@ -1106,15 +1094,29 @@ class StandXAdapter(ExchangeInterface):
 
                         # Message handling loop
                         async for msg in ws:
-                            # StandX 服务端每 10s 发送 Ping；客户端需及时回应 Pong，避免 5 分钟无 Pong 被断开
                             if await self._handle_ws_ping_pong(ws, msg, ws_name="order"):
                                 continue
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 data = json.loads(msg.data)
+                                # 认证成功响应 code=0/200
+                                if data.get("method") == "auth:login" or data.get("request_id") == auth_msg["request_id"]:
+                                    code = data.get("code")
+                                    if code is None:
+                                        code = data.get("data", {}).get("code")
+                                    if code in (0, 200):
+                                        self.ws_order_authed.set()
+                                        logger.info("Order WS authentication successful")
+                                    else:
+                                        logger.error(f"Order WS authentication failed: {data}")
                                 await self._handle_order_ws_message(data)
                             elif msg.type == aiohttp.WSMsgType.ERROR:
                                 logger.error(f"Order WS error: {ws.exception()}")
                                 break
+
+                # 连接退出时重置标记
+                self.ws_order_client = None
+                self.ws_order_ready.clear()
+                self.ws_order_authed.clear()
 
             # Start order WebSocket in background
             asyncio.create_task(order_ws_handler())
@@ -1236,12 +1238,48 @@ class StandXAdapter(ExchangeInterface):
             else:
                 self.callbacks["positions"](self.wallet_address, positions_dict)
 
+    async def _send_order_ws_request(self, method: str, params: dict, header: Dict[str, str] = None, timeout: float = 10.0) -> dict:
+        """通过订单 WS 发送请求并等待响应。"""
+        await self._ensure_order_ws()
+        if not self.ws_order_client:
+            return {"code": -1, "message": "order ws unavailable"}
+
+        request_id = str(uuid.uuid4())
+        payload = {
+            "session_id": self.session_id,
+            "request_id": request_id,
+            "method": method,
+            "params": json.dumps(params)
+        }
+        if header:
+            payload["header"] = header
+
+        future = asyncio.get_event_loop().create_future()
+        self.pending_order_futures[request_id] = future
+
+        try:
+            await self.ws_order_client.send_json(payload)
+            response = await asyncio.wait_for(future, timeout=timeout)
+            return response
+        except asyncio.TimeoutError:
+            logger.error(f"Order WS request timeout: {method} {request_id}")
+            return {"code": 408, "message": "timeout", "request_id": request_id}
+        except Exception as e:
+            logger.error(f"Order WS request error: {e}")
+            return {"code": -1, "message": str(e), "request_id": request_id}
+        finally:
+            self.pending_order_futures.pop(request_id, None)
+
     async def _handle_order_ws_message(self, message: dict):
         """Handle order response WebSocket messages."""
-        # Handle order creation responses
         request_id = message.get("request_id")
+
+        # fulfill pending future if present
+        pending = self.pending_order_futures.get(request_id)
+        if pending and not pending.done():
+            pending.set_result(message)
+
         code = message.get("code")
-        
         if code == 0:
             logger.debug(f"Order response success for request {request_id}")
         else:
@@ -1264,7 +1302,12 @@ class StandXAdapter(ExchangeInterface):
                 self.ws_market_authed = False
                 self.ws_market_ready.clear()
                 self.ws_market_client = None
+                if self.ws_order_client:
+                    await self.ws_order_client.close()
                 self.ws_order_client = None
+                self.ws_order_ready.clear()
+                self.ws_order_authed.clear()
+                self.pending_order_futures.clear()
                 self.ws_task = None
                 
                 # Close HTTP session

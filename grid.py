@@ -29,9 +29,9 @@ GRID_CONFIGS = {
         "GRID_AMOUNT": 0.01,  # 单网格挂单量
         "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
         "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
-        "MAX_POSITION": 1.0,  # 最大仓位限制
-        "DECREASE_POSITION": 0.35,  # 降低仓位触发点
-        "ALER_POSITION": 0.3,  # 警告仓位限制
+        "MAX_POSITION": 0.6,  # 最大仓位限制
+        "DECREASE_POSITION": 0.25,  # 降低仓位触发点
+        "ALER_POSITION": 0.2,  # 警告仓位限制
         "MARKET_ID": 0,  # 市场ID
         "ATR_THRESHOLD": 7,  # ATR波动阈值
     },
