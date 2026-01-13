@@ -574,7 +574,7 @@ class StandXAdapter(ExchangeInterface):
                 if not (isinstance(response, dict) and response.get("code") == 0):
                     logger.error(f"Failed to cancel order {cl_ord_id} via WS: {response}")
                     return False
-            logger.info(f"Successfully cancelled {len(order_ids)} orders via WS")
+            logger.debug(f"Successfully cancelled {len(order_ids)} orders via WS")
             return True
         except Exception as e:
             logger.error(f"cancel_grid_orders error: {e}")

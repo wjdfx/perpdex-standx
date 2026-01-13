@@ -203,51 +203,50 @@ class OnlyMakerStrategy:
     # ------------------------------------------------------------------
     async def _refresh_open_orders(self, orders: List[Dict[str, Any]]):
         """用最新订单列表刷新本地 open_orders。"""
-        async with self._lock:
-            bid_orders: List[Dict[str, Any]] = []
-            ask_orders: List[Dict[str, Any]] = []
-            
-            if len(orders) == 0:
-                return
-            
-            self.fix_order = None
-            for order in orders or []:
-                try:
-                    logger.debug(f"order: {order}")
-                    client_order_id = str(order.get("clientOrderId"))
-                    if not client_order_id.startswith("maker_"):
-                        if client_order_id.startswith("fix_"):
-                            # 修复单
-                            self.fix_order = {
-                                "id": order.get("id"),
-                                "price": float(order.get("price", 0)),
-                                "amount": float(order.get("amount", 0)),
-                            }
-                        continue
-                    symbol = (order.get("symbol") or "").replace("/", "-")
-                    if symbol != self.cfg.symbol:
-                        continue
-                    status = (order.get("status") or "").lower()
-                    if status not in {"open", "new"}:
-                        continue
-                    side = (order.get("side") or "").lower()
-                    view = self._order_view(order)
-                    if not view:
-                        continue
-                    if side == "buy":
-                        bid_orders.append(view)
-                    elif side == "sell":
-                        ask_orders.append(view)
-                except Exception:
+        bid_orders: List[Dict[str, Any]] = []
+        ask_orders: List[Dict[str, Any]] = []
+        
+        if len(orders) == 0:
+            return
+        
+        self.fix_order = None
+        for order in orders or []:
+            try:
+                logger.debug(f"order: {order}")
+                client_order_id = str(order.get("clientOrderId"))
+                if not client_order_id.startswith("maker_"):
+                    if client_order_id.startswith("fix_"):
+                        # 修复单
+                        self.fix_order = {
+                            "id": order.get("id"),
+                            "price": float(order.get("price", 0)),
+                            "amount": float(order.get("amount", 0)),
+                        }
                     continue
+                symbol = (order.get("symbol") or "").replace("/", "-")
+                if symbol != self.cfg.symbol:
+                    continue
+                status = (order.get("status") or "").lower()
+                if status not in {"open", "new"}:
+                    continue
+                side = (order.get("side") or "").lower()
+                view = self._order_view(order)
+                if not view:
+                    continue
+                if side == "buy":
+                    bid_orders.append(view)
+                elif side == "sell":
+                    ask_orders.append(view)
+            except Exception:
+                continue
 
-            bid_orders.sort(key=lambda x: x["price"], reverse=True)
-            ask_orders.sort(key=lambda x: x["price"])
+        bid_orders.sort(key=lambda x: x["price"], reverse=True)
+        ask_orders.sort(key=lambda x: x["price"])
 
-            self.open_orders["bid"] = bid_orders
-            self.open_orders["ask"] = ask_orders
-            
-            logger.info(f"同步订单：{self.open_orders}")
+        self.open_orders["bid"] = bid_orders
+        self.open_orders["ask"] = ask_orders
+        
+        logger.info(f"同步订单：{self.open_orders}")
 
     async def _check_status_loop(self):
         """每 30 秒通过 REST 全量同步订单，防止 WS 漏单。"""
@@ -260,8 +259,9 @@ class OnlyMakerStrategy:
         while self._running:
             try:
                 # 同步订单
-                orders = await self.adapter.get_orders_by_rest()
-                await self._refresh_open_orders(orders)
+                async with self._lock:
+                    orders = await self.adapter.get_orders_by_rest()
+                    await self._refresh_open_orders(orders)
                 
                 # 检查价格距离
                 for o in self.open_orders["bid"]:
