@@ -305,7 +305,7 @@ class OnlyMakerStrategy:
                 break
             except Exception as exc:
                 logger.exception(f"订单同步任务异常: {exc}")
-            await asyncio.sleep(20)
+            await asyncio.sleep(60)
             
     async def _place_fix_order(self, pos: Dict[str, Any]):
         entry_price = float(pos.get("entry_price"))
