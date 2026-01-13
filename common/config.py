@@ -26,6 +26,9 @@ API_KEY_PRIVATE_KEY = os.getenv('API_KEY_PRIVATE_KEY', '')
 LOG_LEVEL = os.getenv('LOG_LEVEL', "INFO")
 LOG_FORMAT = os.getenv('LOG_FORMAT', "")
 
+# 代理配置
+PROXY_URL = os.getenv('PROXY_URL', '')
+
 # PostgreSQL 配置
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
 POSTGRES_PORT = int(os.getenv('POSTGRES_PORT', 5432))

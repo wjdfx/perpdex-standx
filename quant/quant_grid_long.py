@@ -3,6 +3,7 @@ from common.config import (
     API_KEY_PRIVATE_KEY,
     ACCOUNT_INDEX,
     API_KEY_INDEX,
+    PROXY_URL,
 )
 
 import logging
@@ -1416,13 +1417,14 @@ async def run_grid_trading(_exchange_type: str = "lighter"):
     )
 
     # 设置订阅回调
+    proxy_config = PROXY_URL if PROXY_URL else None
     await exchange.subscribe(
         {
             "market_stats": on_market_stats_update,
             "orders": on_account_all_orders_update,
             "positions": on_account_all_positions_update,
         },
-        proxy="http://127.0.0.1:7890",
+        proxy=proxy_config,
     )
 
     # 设置全局网格交易实例
