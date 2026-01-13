@@ -150,7 +150,7 @@ class OnlyMakerStrategy:
             self.mark_price = float(mark_price)
             self.last_market_stats_time = time.time()
             logger.debug(f"当前价格：{mark_price}")
-            # await self._reconcile_orders()
+            await self._reconcile_orders()
         except Exception as exc:
             logger.exception(f"on_market_stats error: {exc}")
 
