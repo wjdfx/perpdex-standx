@@ -7,7 +7,7 @@ import pandas as pd
 from typing import List, Tuple, Dict, Callable, Any
 import lighter
 from lighter.signer_client import CODE_OK
-from ..ws_client import create_unified_client
+from .lighter_ws_client import create_unified_client
 from common.config import BASE_URL
 from .interfaces import ExchangeInterface
 from .order_converter import normalize_order_to_ccxt, normalize_orders_list
@@ -380,7 +380,6 @@ class LighterAdapter(ExchangeInterface):
                 return {}
             account = account_resp.accounts[0]
             account_dict = account.__dict__.copy()
-            print(account.positions)
             # Convert positions to dict with market_index as key
             account_dict['positions'] = {str(pos.market_id): pos.__dict__ for pos in account.positions}
             return account_dict

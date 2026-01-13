@@ -7,6 +7,12 @@ from websockets.asyncio.client import connect as connect_async
 import aiohttp
 from aiohttp import WSMsgType
 
+# 添加订单格式转换导入
+try:
+    from .order_converter import normalize_orders_list
+except ImportError:
+    from exchanges.order_converter import normalize_orders_list
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -163,10 +169,20 @@ class UnifiedWebSocketClient:
         默认的账户所有订单处理函数
         """
         logger.info(f"Account {account_id} all orders updated:")
-        for market_index, order_list in orders.items():
-            logger.info(f"   Market {market_index}: {len(order_list)} orders")
-            for order in order_list[:3]:  # 显示前3个订单
-                logger.info(f"     Order ID: {order.get('order_id', 'N/A')}, Status: {order.get('status', 'N/A')}")
+        
+        # 处理不同格式的订单数据
+        if isinstance(orders, dict):
+            # 原始格式：market_index -> order_list
+            for market_index, order_list in orders.items():
+                logger.info(f"   Market {market_index}: {len(order_list)} orders")
+                for order in order_list[:3]:  # 显示前3个订单
+                    logger.info(f"     Order ID: {order.get('order_id', order.get('id', 'N/A'))}, Status: {order.get('status', 'N/A')}")
+        elif isinstance(orders, list):
+            # CCXT格式：统一的订单列表
+            logger.info(f"   Total orders: {len(orders)}")
+            for order in orders[:3]:  # 显示前3个订单
+                logger.info(f"     Order ID: {order.get('id', 'N/A')}, Status: {order.get('status', 'N/A')}")
+        
         logger.info("-" * 50)
 
     def default_account_all_positions_handler(self, account_id, positions):
@@ -641,8 +657,11 @@ class UnifiedWebSocketClient:
             # 存储账户订单状态
             self.account_all_orders_states[account_id] = orders
 
+            # 使用 normalize_orders_list 将订单格式转换为 CCXT 标准格式
+            normalized_orders = normalize_orders_list(orders)
+
             # 调用回调函数
-            self.on_account_all_orders_update(account_id, orders)
+            self.on_account_all_orders_update(account_id, normalized_orders)
 
         except Exception as e:
             logger.exception(f"Error handling account all orders update: {e}")
@@ -666,13 +685,16 @@ class UnifiedWebSocketClient:
             # 存储账户订单状态
             self.account_all_orders_states[account_id] = orders
 
+            # 使用 normalize_orders_list 将订单格式转换为 CCXT 标准格式
+            normalized_orders = normalize_orders_list(orders)
+
             # 调用回调函数
             if asyncio.iscoroutinefunction(self.on_account_all_orders_update):
                 # 如果回调函数是异步的，直接等待它
-                await self.on_account_all_orders_update(account_id, orders)
+                await self.on_account_all_orders_update(account_id, normalized_orders)
             else:
                 # 如果回调函数是同步的，直接调用
-                self.on_account_all_orders_update(account_id, orders)
+                self.on_account_all_orders_update(account_id, normalized_orders)
 
         except Exception as e:
             logger.exception(f"Error handling account all orders update: {e}")

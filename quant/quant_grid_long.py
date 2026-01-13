@@ -16,7 +16,6 @@ import asyncio
 import time
 import pandas as pd
 from typing import Dict, List, Optional, Set, Tuple
-from .ws_client import create_unified_client
 from .grid_matin import GridTrading
 from .exchanges import create_exchange_adapter
 from .exchanges.order_converter import normalize_order_to_ccxt, normalize_orders_list
