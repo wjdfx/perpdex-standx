@@ -78,6 +78,7 @@ class OnlyMakerStrategy:
         self.mark_price: Optional[float] = None
         self.position_qty: float = 0.0
         self.current_atr: Optional[float] = None
+        self.pause: bool = False
 
         # open_orders: {"bid": [{"id": str, "price": float}, ...], "ask": [...]}
         self.open_orders: Dict[str, List[Dict[str, Any]]] = {"bid": [], "ask": []}
@@ -88,7 +89,9 @@ class OnlyMakerStrategy:
         self._atr_task: Optional[asyncio.Task] = None
         self._order_sync_task: Optional[asyncio.Task] = None
         self._market_stats_monitor_task: Optional[asyncio.Task] = None
+        self._task_processor: Optional[asyncio.Task] = None
         self.last_market_stats_time: Optional[float] = None
+        self.task_queue = asyncio.Queue()
 
     # ------------------------------------------------------------------
     # 公共方法
@@ -111,6 +114,8 @@ class OnlyMakerStrategy:
         self._order_sync_task = asyncio.create_task(self._check_status_loop())
         # 启动市场数据监控任务
         self._market_stats_monitor_task = asyncio.create_task(self._market_stats_monitor_loop())
+        # 启动后台任务处理器
+        self._task_processor = asyncio.create_task(self.process_tasks())
         logger.info("OnlyMakerStrategy started")
 
     async def stop(self):
@@ -135,6 +140,12 @@ class OnlyMakerStrategy:
                 await self._market_stats_monitor_task
             except asyncio.CancelledError:
                 pass
+        if self._task_processor:
+            self._task_processor.cancel()
+            try:
+                await self._task_processor
+            except asyncio.CancelledError:
+                pass
         await self.adapter.close()
         logger.info("OnlyMakerStrategy stopped")
 
@@ -150,7 +161,8 @@ class OnlyMakerStrategy:
             self.mark_price = float(mark_price)
             self.last_market_stats_time = time.time()
             logger.debug(f"当前价格：{mark_price}")
-            await self._reconcile_orders()
+            # 将任务放入队列中，避免阻塞
+            await self.task_queue.put(self._reconcile_orders())
         except Exception as exc:
             logger.exception(f"on_market_stats error: {exc}")
 
@@ -326,6 +338,9 @@ class OnlyMakerStrategy:
         async with self._lock:
             if self.mark_price is None:
                 return
+            
+            if self.pause:
+                return
 
             if abs(self.position_qty) >= self.cfg.max_position_btc:
                 logger.info("持仓超限，撤单并暂停挂单")
@@ -435,48 +450,60 @@ class OnlyMakerStrategy:
                 
                 if self.last_market_stats_time is None:
                     continue
-                    
+                     
                 current_time = time.time()
                 time_since_last_update = current_time - self.last_market_stats_time
-                
+                 
                 if time_since_last_update > 30:
                     logger.warning(f"市场数据超过30秒未更新，最后更新时间: {self.last_market_stats_time}, 当前时间: {current_time}")
                     await self._reconnect_ws_and_resubscribe()
-                    
+                     
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.exception(f"市场数据监控任务异常: {exc}")
 
-    async def _reconnect_ws_and_resubscribe(self):
-            """重新连接WS并重新订阅。"""
+    async def process_tasks(self):
+        """后台任务处理器，处理队列中的任务。"""
+        while self._running:
             try:
-                logger.info("开始重新连接WS并重新订阅...")
-                
-                # 关闭当前WS连接
-                await self.adapter.close()
-                
-                # 重新初始化客户端
-                await self.adapter.initialize_client()
-                
-                # 重新订阅 - 确保完全重新初始化WebSocket
-                callbacks = {
-                    "market_stats": self.on_market_stats,
-                    "orders": self.on_orders,
-                    "positions": self.on_positions,
-                }
-                await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
-                
-                # 等待WebSocket连接准备就绪
-                if hasattr(self.adapter, '_wait_for_market_ws'):
-                    ws_ready = await self.adapter._wait_for_market_ws(timeout=15.0)
-                    if not ws_ready:
-                        logger.warning("重连后WebSocket未能及时准备就绪")
-                
-                logger.info("WS重新连接并订阅成功")
-                
+                task = await self.task_queue.get()
+                await task
+                self.task_queue.task_done()
+            except asyncio.CancelledError:
+                break
             except Exception as exc:
-                logger.exception(f"重新连接WS并重新订阅失败: {exc}")
+                logger.exception(f"任务处理器异常: {exc}")
+
+    async def _reconnect_ws_and_resubscribe(self):
+        """重新连接WS并重新订阅。"""
+        try:
+            logger.info("开始重新连接WS并重新订阅...")
+            
+            # 关闭当前WS连接
+            await self.adapter.close()
+            
+            # 重新初始化客户端
+            await self.adapter.initialize_client()
+            
+            # 重新订阅 - 确保完全重新初始化WebSocket
+            callbacks = {
+                "market_stats": self.on_market_stats,
+                "orders": self.on_orders,
+                "positions": self.on_positions,
+            }
+            await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
+            
+            # 等待WebSocket连接准备就绪
+            if hasattr(self.adapter, '_wait_for_market_ws'):
+                ws_ready = await self.adapter._wait_for_market_ws(timeout=15.0)
+                if not ws_ready:
+                    logger.warning("重连后WebSocket未能及时准备就绪")
+            
+            logger.info("WS重新连接并订阅成功")
+            
+        except Exception as exc:
+            logger.exception(f"重新连接WS并重新订阅失败: {exc}")
 
     # ------------------------------------------------------------------
     # ATR 计算
@@ -499,6 +526,9 @@ class OnlyMakerStrategy:
                 if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
                     logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}")
                     await self.cancel_all()
+                    self.pause = True
+                else:
+                    self.pause = False
             except asyncio.CancelledError:
                 break
             except Exception as exc:
