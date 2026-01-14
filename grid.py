@@ -28,7 +28,7 @@ GRID_CONFIGS = {
         "GRID_COUNT": 3,  # 每侧网格数量
         "GRID_AMOUNT": 0.01,  # 单网格挂单量
         "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
-        "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
+        "MAX_TOTAL_ORDERS": 20,  # 最大活跃订单数量
         "MAX_POSITION": 0.6,  # 最大仓位限制
         "DECREASE_POSITION": 0.25,  # 降低仓位触发点
         "ALER_POSITION": 0.2,  # 警告仓位限制
