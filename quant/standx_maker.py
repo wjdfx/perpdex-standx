@@ -325,8 +325,8 @@ class OnlyMakerStrategy:
         price = round(target_price, 2)
         client_order_id = f"fix_{int(time.time() * 1000) % 1000000}"
         success, order_id = await self.adapter.place_single_order(is_ask, price, self.position_qty, client_order_id)
+        order_info = {"id": order_id, "price": price, "amount": self.position_qty}
         if success:
-            order_info = {"id": order_id, "price": price, "amount": self.position_qty}
             self.fix_order = order_info
             logger.info(f"修复订单挂单成功: {order_info}, size={self.position_qty}, 当前价格: {self.mark_price}")
         else:
