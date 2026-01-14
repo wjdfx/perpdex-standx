@@ -416,6 +416,7 @@ class StandXAdapter(ExchangeInterface):
                      return data
          except Exception as e:
              logger.error(f"Request to {url} failed: {e}")
+             self._initialize_http_session()
              self.auth_token = None
              await self.initialize_client()
              return {"code": -1, "message": str(e)}
