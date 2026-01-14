@@ -20,3 +20,6 @@ cryptography
 base58
 requests
 eth-account
+
+#ccxt
+ccxt

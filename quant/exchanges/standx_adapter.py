@@ -416,7 +416,8 @@ class StandXAdapter(ExchangeInterface):
                      return data
          except Exception as e:
              logger.error(f"Request to {url} failed: {e}")
-             self.initialize_client()
+             self.auth_token = None
+             await self.initialize_client()
              return {"code": -1, "message": str(e)}
 
     async def _generate_body_signature(self, payload: dict) -> Dict[str, str]:
@@ -748,121 +749,78 @@ class StandXAdapter(ExchangeInterface):
             raise ValueError(f"Unsupported resolution: {resolution}")
         return mapping[resolution]
     
+    @staticmethod
+    def _resolution_to_binance_interval(resolution: str) -> str:
+        """
+        Convert resolution to Binance interval format.
+        """
+        mapping = {
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1h",
+            "4h": "4h",
+            "1d": "1d",
+        }
+        if resolution not in mapping:
+            raise ValueError(f"Unsupported resolution: {resolution}")
+        return mapping[resolution]
+    
+    @staticmethod
+    def _market_id_to_binance_symbol(market_id: int) -> str:
+        """
+        Convert market_id to Binance symbol.
+        """
+        # Mapping from StandX market_id to Binance symbols
+        market_id_to_binance = {
+            0: "ETHUSDT",  # ETH-USD -> ETHUSDT
+            1: "BTCUSDT",  # BTC-USD -> BTCUSDT
+            2: "SOLUSDT",  # SOL-USD -> SOLUSDT
+        }
+        return market_id_to_binance.get(market_id, "BTCUSDT")
+    
     async def candle_stick(self, market_id: int, resolution: str, count_back: int = 100) -> pd.DataFrame:
         """
-        Get candlestick data.
+        Get candlestick data from Binance.
         """
-        # try:
-        #     # Get symbol for the market_id
-        #     symbol = self._get_symbol_for_market_id(market_id)
-            
-        #     # Map resolution to StandX format
-        #     resolution_map = {
-        #         '1m': '1',
-        #         '5m': '5',
-        #         '15m': '15',
-        #         '1h': '60',
-        #         '1d': '1D'
-        #     }
-        #     standx_resolution = resolution_map.get(resolution, '1')
-            
-        #     # Get current time and calculate start time based on resolution
-        #     end_time = int(time.time())
-            
-        #     # Convert resolution to minutes for calculation
-        #     resolution_minutes_map = {
-        #         '1': 1,
-        #         '5': 5,
-        #         '15': 15,
-        #         '60': 60,  # 1 hour
-        #         '1D': 1440  # 1 day = 24 * 60 minutes
-        #     }
-        #     resolution_minutes = resolution_minutes_map.get(standx_resolution, 1)
-            
-        #     # Calculate start time: go back count_back candles, each candle is resolution_minutes long
-        #     start_time = end_time - (resolution_minutes * 60 * count_back)
-            
-        #     response = await self._make_authenticated_request(
-        #         "GET",
-        #         "/kline/history",
-        #         params={
-        #             "symbol": symbol,
-        #             "resolution": standx_resolution,
-        #             "from": start_time,
-        #             "to": end_time,
-        #             "countBack": count_back
-        #         }
-        #     )
-        #     logger.info(f"请求参数：{start_time}, {end_time}, {count_back}")
-        #     logger.info(f"candle_stick response: {response}")
-            
-        #     if response.get("s") == "ok":
-        #         # Convert to DataFrame
-        #         candle_data = []
-        #         for i in range(len(response["t"])):
-        #             candle_data.append({
-        #                 'time': pd.to_datetime(response["t"][i], unit='s'),
-        #                 'open': response["o"][i],
-        #                 'high': response["h"][i],
-        #                 'low': response["l"][i],
-        #                 'close': response["c"][i],
-        #                 'volume': response["v"][i]
-        #             })
-                
-        #         df = pd.DataFrame(candle_data)
-        #         if not df.empty:
-        #             df.set_index('time', inplace=True)
-        #             # Convert numeric columns to proper types
-        #             numeric_cols = ['open', 'high', 'low', 'close', 'volume']
-        #             for col in numeric_cols:
-        #                 if col in df.columns:
-        #                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-        #         logger.info(f"candle_stick: Retrieved {len(candle_data)} candles for {symbol}")
-        #         return df
-        #     else:
-        #         logger.warning(f"candle_stick: No candle data available for {symbol}")
-        #         return pd.DataFrame()
-        resolution_seconds = self._resolution_to_seconds(resolution)
-        end_time = int(time.time())
-        start_time = end_time - resolution_seconds * count_back
-        
         try:
-            from common.config import BASE_URL
-            symbol = self._get_symbol_for_market_id(market_id)
-            url = f"{BASE_URL}/api/v1/candles"
-            params = {
-                "market_id": market_id,
-                "resolution": resolution,
-                "start_timestamp": start_time,
-                "end_timestamp": end_time,
-                "count_back": count_back,
-            }
-            headers = {"accept": "application/json"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers) as resp:
-                    data = await resp.json()
-                    if data.get("code") != 200:
-                        logger.error(f"获取K线数据失败: {data.get('message', 'Unknown error')}")
-                        return None
-                    candlesticks = data["c"]
-                    candle_data = []
-                    for candle in candlesticks:
-                        candle_data.append(
-                            {
-                                "time": candle["t"],
-                                "open": candle["o"],
-                                "high": candle["h"],
-                                "low": candle["l"],
-                                "close": candle["c"],
-                                "volume": candle["v"],
-                            }
-                        )
-                    df = pd.DataFrame(candle_data)
-                    df["time"] = pd.to_datetime(df["time"], unit="ms")
-                    return df
+            # Convert market_id to Binance symbol
+            binance_symbol = self._market_id_to_binance_symbol(market_id)
+            
+            # Convert resolution to Binance interval
+            binance_interval = self._resolution_to_binance_interval(resolution)
+            
+            # Use BinanceMarketData to fetch klines
+            from .common_market_data import BinanceMarketData
+            binance_data = BinanceMarketData()
+            
+            # Get klines from Binance
+            df = binance_data.get_klines_df(
+                symbol=binance_symbol,
+                interval=binance_interval,
+                limit=count_back
+            )
+            
+            # Rename columns to match expected format
+            if not df.empty:
+                df = df.rename(columns={
+                    "open_time": "time",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "volume": "volume"
+                })
+                
+                # Select only the columns we need
+                df = df[["time", "open", "high", "low", "close", "volume"]]
+            
+            return df
+            
         except Exception as e:
-            logger.error(f"candle_stick error for market_id {market_id} ({symbol}): {e}")
+            logger.error(f"candle_stick error for market_id {market_id} ({binance_symbol}): {e}")
             return pd.DataFrame()
 
     async def modify_order(self, order_id: int, new_price: float, new_amount: float) -> bool:

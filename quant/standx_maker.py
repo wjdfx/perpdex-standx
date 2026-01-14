@@ -526,7 +526,7 @@ class OnlyMakerStrategy:
                         
                 # 风控：ATR、仓位
                 if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
-                    logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}")
+                    logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}, 当前价格: {self.mark_price}")
                     await self.cancel_all()
                     self.pause = True
                 else:
