@@ -1265,7 +1265,7 @@ async def _risk_check(start: bool = False):
         #     logger.info(f"⚠️ 警告：当前5分钟线阴跌中,暂停交易, {yindie_details_5m}")
         if is_yindie_15m:
             logger.info(f"⚠️ 警告：当前15分钟线阴跌中,暂停交易, {yindie_details_15m}")
-        if is_ema_filter:
+        if is_ema_filter and len(trading_state.sell_orders) == 0:
             logger.info(
                 f"⚠️ 警告：当前EMA均值回归趋势不利,暂停交易, {ema_filter_details}"
             )
