@@ -1040,6 +1040,9 @@ class StandXAdapter(ExchangeInterface):
                         # 确保有 token
                         if not await self._ensure_authenticated():
                             logger.error("Order WS 无法获取认证 token")
+                            self._initialize_http_session()
+                            self.auth_token = None
+                            await self.initialize_client()
                             return
 
                         # Authenticate
