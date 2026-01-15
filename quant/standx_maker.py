@@ -25,16 +25,16 @@ class MakerConfig:
     rebalance_distance_bps: float  # 价格远离超过这个距离时撤单重挂
     order_size_btc: float  # 每笔挂单数量
     max_position_btc: float  # 最大持仓，超过则不再挂单
-    max_atr: float  # 1m, 14 周期 ATR 上限
+    max_atr: float  # 1m, 周期 ATR 上限
 
     max_orders_per_side: int  # 单侧同时间最大挂单数量
     side_order_gap_bps: float  # 单侧多笔挂单之间的间距（bps）
     fix_order_enable: bool = False  # 是否启用仓位修复单
 
-    atr_period: int = 14
+    atr_period: int = 3  # ATR周期
     atr_resolution: str = "1m"
-    atr_count_back: int = 100
-    atr_refresh_sec: int = 30
+    atr_count_back: int = 20
+    atr_refresh_sec: int = 10
 
     proxy: Optional[str] = None
 
