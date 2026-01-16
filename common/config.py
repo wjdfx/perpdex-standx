@@ -51,3 +51,4 @@ STANDX_MAKER_AUTO_CLOSE_POSITION = os.getenv('STANDX_MAKER_AUTO_CLOSE_POSITION',
 
 # 钉钉通知配置（access_token 为空时关闭通知）
 DINGTALK_ACCESS_TOKEN = os.getenv('DINGTALK_ACCESS_TOKEN', '')
+DINGTALK_KEYWORD = os.getenv('DINGTALK_KEYWORD', 'Standx')  # 钉钉机器人关键词

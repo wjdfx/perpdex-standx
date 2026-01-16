@@ -92,16 +92,18 @@ python only_maker.py
 
 ```bash
 DINGTALK_ACCESS_TOKEN=xxx
+DINGTALK_KEYWORD=''  # 钉钉机器人安全设置中的关键词, 选择安全设置为关键词，选完以后在这里配置一下
 ```
 
 ### 说明
 
 - **默认开启**：配置了 `DINGTALK_ACCESS_TOKEN` 后自动启用
 - **关闭通知**：将 `DINGTALK_ACCESS_TOKEN` 留空即可关闭通知
+- **关键词**：`DINGTALK_KEYWORD` 必须与钉钉机器人安全设置中的关键词一致，默认为 `Standx`
 - **通知内容**：交易对、买卖方向、成交价格、成交数量、当前仓位、钱包地址
 
 ### 获取钉钉机器人 Webhook
 
 1. 在钉钉群中添加自定义机器人
-2. 安全设置选择"自定义关键词"，添加关键词如 `StandX`
-3. 复制生成的 Webhook 地址到配置文件
+2. 安全设置选择"自定义关键词"，添加关键词 `Standx`（或自定义，需与 `DINGTALK_KEYWORD` 一致）
+3. 复制 Webhook 地址中的 `access_token` 部分到配置文件
