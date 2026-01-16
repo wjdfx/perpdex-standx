@@ -81,3 +81,27 @@ python only_maker.py
 - 建议做市账号不要在客户端进行其他手动操作，以避免相互影响。
 - 建议开启STANDX_MAKER_FIX_ORDER_ENABLED，做到被吃单后修复仓位。
 - 如需自动平仓模式（挂单成交后立即市价平仓，避免持仓风险），可开启 `STANDX_MAKER_AUTO_CLOSE_POSITION=true`。默认关闭，不影响原有做市逻辑。
+
+## StandX 钉钉通知配置
+
+支持在订单成交（被吃单）时推送钉钉机器人通知，包含地址和交易信息。
+
+### 配置方法
+
+在 `.env` 文件中添加：
+
+```bash
+DINGTALK_ACCESS_TOKEN=xxx
+```
+
+### 说明
+
+- **默认开启**：配置了 `DINGTALK_ACCESS_TOKEN` 后自动启用
+- **关闭通知**：将 `DINGTALK_ACCESS_TOKEN` 留空即可关闭通知
+- **通知内容**：交易对、买卖方向、成交价格、成交数量、当前仓位、钱包地址
+
+### 获取钉钉机器人 Webhook
+
+1. 在钉钉群中添加自定义机器人
+2. 安全设置选择"自定义关键词"，添加关键词如 `StandX`
+3. 复制生成的 Webhook 地址到配置文件

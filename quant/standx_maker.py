@@ -10,6 +10,7 @@ import pandas as pd
 from . import quota
 from .exchanges.standx_adapter import StandXAdapter
 from .exchanges.common_market_data import AbsoluteMoveDetector
+from common.dingtalk_notify import DingTalkNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,11 @@ class OnlyMakerStrategy:
         self.last_market_stats_time: Optional[float] = None
         self.binance_market_data = None
         self.binance_stop_event = asyncio.Event()
+        
+        # 钉钉通知
+        from common.config import DINGTALK_ACCESS_TOKEN
+        self.notifier = DingTalkNotifier(DINGTALK_ACCESS_TOKEN, proxy=config.proxy)
+        self._prev_position_qty: float = 0.0  # 用于检测仓位变化
 
     # ------------------------------------------------------------------
     # 公共方法
@@ -252,7 +258,28 @@ class OnlyMakerStrategy:
                 return
             qty = pos.get("qty")
             if qty is not None:
-                self.position_qty = float(qty)
+                new_qty = float(qty)
+                
+                # 检测吃单：仓位从0变为非0，或仓位发生变化
+                if new_qty != self._prev_position_qty and new_qty != 0:
+                    # 计算成交方向和数量
+                    delta = new_qty - self._prev_position_qty
+                    side = "buy" if delta > 0 else "sell"
+                    filled_qty = abs(delta)
+                    
+                    # 发送钉钉通知
+                    asyncio.create_task(self.notifier.notify_order_filled(
+                        address=self.adapter.wallet_address,
+                        symbol=self.cfg.symbol,
+                        side=side,
+                        price=self.current_price or 0,
+                        qty=filled_qty,
+                        position_qty=new_qty,
+                        current_price=self.current_price,
+                    ))
+                
+                self._prev_position_qty = new_qty
+                self.position_qty = new_qty
             
             # 自动平仓模式：有仓位时立即市价平仓
             if self.cfg.auto_close_position and self.position_qty != 0:
