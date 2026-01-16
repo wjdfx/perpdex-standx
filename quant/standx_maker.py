@@ -115,8 +115,8 @@ class OnlyMakerStrategy:
         self.binance_stop_event = asyncio.Event()
         
         # 钉钉通知
-        from common.config import DINGTALK_ACCESS_TOKEN
-        self.notifier = DingTalkNotifier(DINGTALK_ACCESS_TOKEN, proxy=config.proxy)
+        from common.config import DINGTALK_ACCESS_TOKEN, DINGTALK_KEYWORD
+        self.notifier = DingTalkNotifier(DINGTALK_ACCESS_TOKEN, keyword=DINGTALK_KEYWORD, proxy=config.proxy)
         self._prev_position_qty: float = 0.0  # 用于检测仓位变化
 
     # ------------------------------------------------------------------

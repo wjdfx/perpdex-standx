@@ -14,14 +14,15 @@ class DingTalkNotifier:
 
     WEBHOOK_BASE = "https://oapi.dingtalk.com/robot/send?access_token="
 
-    def __init__(self, access_token: str, proxy: Optional[str] = None):
+    def __init__(self, access_token: str, keyword: str = "Standx", proxy: Optional[str] = None):
         self.access_token = access_token
+        self.keyword = keyword
         self.webhook = f"{self.WEBHOOK_BASE}{access_token}" if access_token else ""
         self.proxy = proxy
         self.enabled = bool(access_token and access_token.strip())
         
         if self.enabled:
-            logger.info("钉钉通知已启用")
+            logger.info(f"钉钉通知已启用, 关键词: {keyword}")
         else:
             logger.info("钉钉通知已关闭 (ACCESS_TOKEN 未配置)")
 
@@ -94,9 +95,9 @@ class DingTalkNotifier:
         # 截取地址显示
         short_addr = f"{address[:6]}...{address[-4:]}" if len(address) > 10 else address
         
-        title = f"Standx {side_text} {symbol}"
+        title = f"{self.keyword} {side_text} {symbol}"
         
-        text = f"""### 📢 Standx 订单成交通知
+        text = f"""### 📢 {self.keyword} 订单成交通知
 
 {side_emoji} **{side_text}** {symbol}
 
