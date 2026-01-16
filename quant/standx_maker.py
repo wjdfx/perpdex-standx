@@ -432,9 +432,9 @@ class OnlyMakerStrategy:
     async def _reconcile_orders(self):
         """根据当前行情、ATR、仓位，决定挂单/撤单/重挂。"""
         while self._running:
-            async with self._lock:
-                try:
-                    await asyncio.sleep(1)  # 每1秒检查一次
+            await asyncio.sleep(1)  # 每1秒检查一次
+            try:
+                async with self._lock:
                     if self.current_price is None:
                         continue
                     
@@ -456,10 +456,10 @@ class OnlyMakerStrategy:
                     # 决定是否补挂
                     await self._ensure_side_orders("bid", is_ask=False, target_prices=target_bids)
                     await self._ensure_side_orders("ask", is_ask=True, target_prices=target_asks)
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    logger.exception(f"订单处理任务异常: {exc}")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception(f"订单处理任务异常: {exc}")
 
     async def _maybe_cancel_side(self, side: str):
         orders = list(self.open_orders.get(side) or [])
@@ -680,12 +680,14 @@ class OnlyMakerStrategy:
                         # logger.info(f"ATR 更新: {self.current_atr:.4f}")
                         
                 # 风控：ATR、仓位
-                if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
-                    logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}, 当前价格: {self.current_price}")
-                    await self.cancel_all()
-                    self.atr_pause = True
-                else:
-                    self.atr_pause = False
+                async with self._lock:
+                    if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
+                        if len(self.open_orders["bid"]) > 0 or len(self.open_orders["ask"]) > 0:
+                            logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}, 当前价格: {self.current_price}")
+                        await self.cancel_all()
+                        self.atr_pause = True
+                    else:
+                        self.atr_pause = False
             except asyncio.CancelledError:
                 break
             except Exception as exc:
