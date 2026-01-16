@@ -162,50 +162,47 @@ class OnlyMakerStrategy:
     async def stop(self):
         """停止策略，撤单并关闭资源。"""
         self._running = False
-        await self.cancel_all()
-        if self._status_check_task:
-            self._status_check_task.cancel()
-            try:
-                await self._status_check_task
-            except asyncio.CancelledError:
-                pass
-        if self._atr_task:
-            self._atr_task.cancel()
-            try:
-                await self._atr_task
-            except asyncio.CancelledError:
-                pass
-        if self._order_sync_task:
-            self._order_sync_task.cancel()
-            try:
-                await self._order_sync_task
-            except asyncio.CancelledError:
-                pass
-        if self._market_stats_monitor_task:
-            self._market_stats_monitor_task.cancel()
-            try:
-                await self._market_stats_monitor_task
-            except asyncio.CancelledError:
-                pass
-        if self._detector_monitor_task:
-            self._detector_monitor_task.cancel()
-            try:
-                await self._detector_monitor_task
-            except asyncio.CancelledError:
-                pass
-        if self._binance_market_task:
-            self._binance_market_task.cancel()
-            try:
-                await self._binance_market_task
-            except asyncio.CancelledError:
-                pass
-        if self._reconcile_orders_task:
-            self._reconcile_orders_task.cancel()
-            try:
-                await self._reconcile_orders_task
-            except asyncio.CancelledError:
-                pass
-        await self.adapter.close()
+
+        tasks = [
+            self._status_check_task,
+            self._atr_task,
+            self._order_sync_task,
+            self._market_stats_monitor_task,
+            self._detector_monitor_task,
+            self._binance_market_task,
+            self._reconcile_orders_task,
+        ]
+
+        # 先取消所有后台任务（不等待），确保 WS 仍活跃以便撤单
+        for task in tasks:
+            if task:
+                task.cancel()
+
+        # 撤单加超时保护
+        try:
+            await asyncio.wait_for(self.cancel_all(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("订单取消超时，可能有部分订单未能成功取消")
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception("取消订单时发生错误: %s", exc)
+
+        # 关闭 WS 加超时保护
+        try:
+            await asyncio.wait_for(self.adapter.close(), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.warning("关闭 WebSocket 连接超时")
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception("关闭 WebSocket 连接时发生错误: %s", exc)
+
+        # 等待所有任务结束，吞掉取消异常，其他异常打日志
+        results = await asyncio.gather(
+            *(t for t in tasks if t),
+            return_exceptions=True,
+        )
+        for res in results:
+            if isinstance(res, Exception) and not isinstance(res, asyncio.CancelledError):
+                logger.warning("后台任务结束时出现异常: %s", res)
+
         logger.info("OnlyMakerStrategy stopped")
 
     # ------------------------------------------------------------------
@@ -784,10 +781,14 @@ async def main():
 
     try:
         while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt, stopping...")
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                # 当任务被取消时（例如Ctrl+C），打印消息并退出循环
+                logger.info("Keyboard interrupt, stopping...")
+                break
     finally:
+        logger.info("策略结束...")
         await strategy.stop()
 
 
