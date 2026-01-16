@@ -9,6 +9,7 @@ import pandas as pd
 
 from . import quota
 from .exchanges.standx_adapter import StandXAdapter
+from .exchanges.common_market_data import AbsoluteMoveDetector
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ class MakerConfig:
 
     atr_period: int = 3  # ATR周期
     atr_resolution: str = "1m"
-    atr_count_back: int = 20
-    atr_refresh_sec: int = 10
+    atr_count_back: int = 5
+    atr_refresh_sec: int = 2  # ATR 更新时间
 
     proxy: Optional[str] = None
 
@@ -52,7 +53,9 @@ class MakerConfig:
             STANDX_MAKER_MAX_ORDERS_PER_SIDE,
             STANDX_MAKER_SIDE_ORDER_GAP_BPS,
             STANDX_MAKER_FIX_ORDER_ENABLED,
+            PROXY_URL,
         )
+        proxy_config = PROXY_URL if PROXY_URL else None
         return cls(
             symbol=STANDX_MAKER_SYMBOL,
             order_distance_bps=STANDX_MAKER_ORDER_DISTANCE_BPS,
@@ -64,6 +67,7 @@ class MakerConfig:
             max_orders_per_side=STANDX_MAKER_MAX_ORDERS_PER_SIDE,
             side_order_gap_bps=STANDX_MAKER_SIDE_ORDER_GAP_BPS,
             fix_order_enable=STANDX_MAKER_FIX_ORDER_ENABLED,
+            proxy=proxy_config,
         )
 
 
@@ -76,10 +80,18 @@ class OnlyMakerStrategy:
         self.adapter = adapter
         self.cfg = config
 
-        self.mark_price: Optional[float] = None
+        self.current_price: Optional[float] = None
         self.position_qty: float = 0.0
         self.current_atr: Optional[float] = None
         self.pause: bool = False
+        self.atr_pause: bool = False
+        self.detector_pause: bool = False
+
+        # 波动检测器
+        self.vol_detector = AbsoluteMoveDetector(
+            window=50,
+            price_threshold=40.0
+        )
 
         # open_orders: {"bid": [{"id": str, "price": float}, ...], "ask": [...]}
         self.open_orders: Dict[str, List[Dict[str, Any]]] = {"bid": [], "ask": []}
@@ -87,12 +99,16 @@ class OnlyMakerStrategy:
 
         self._lock = asyncio.Lock()
         self._running = False
+        self._status_check_task: Optional[asyncio.Task] = None
         self._atr_task: Optional[asyncio.Task] = None
         self._order_sync_task: Optional[asyncio.Task] = None
         self._market_stats_monitor_task: Optional[asyncio.Task] = None
-        self._task_processor: Optional[asyncio.Task] = None
+        self._detector_monitor_task: Optional[asyncio.Task] = None
+        self._binance_market_task: Optional[asyncio.Task] = None
+        self._reconcile_orders_task: Optional[asyncio.Task] = None
         self.last_market_stats_time: Optional[float] = None
-        self.task_queue = asyncio.Queue()
+        self.binance_market_data = None
+        self.binance_stop_event = asyncio.Event()
 
     # ------------------------------------------------------------------
     # 公共方法
@@ -103,26 +119,39 @@ class OnlyMakerStrategy:
         await self.adapter.initialize_client()
 
         callbacks = {
-            "market_stats": self.on_market_stats,
+            # "market_stats": self.on_market_stats,
             "orders": self.on_orders,
             "positions": self.on_positions,
+            "depth_book": self.on_depth_book,
         }
         await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
 
+        # 状态检查任务
+        self._status_check_task = asyncio.create_task(self._check_status_loop())
         # 启动 ATR 周期任务
         self._atr_task = asyncio.create_task(self._atr_loop())
         # 定时拉取 REST 订单快照，避免 WS 漏单
-        self._order_sync_task = asyncio.create_task(self._check_status_loop())
+        self._order_sync_task = asyncio.create_task(self._order_check_loop())
         # 启动市场数据监控任务
         self._market_stats_monitor_task = asyncio.create_task(self._market_stats_monitor_loop())
-        # 启动后台任务处理器
-        self._task_processor = asyncio.create_task(self.process_tasks())
+        # 启动波动监控任务
+        self._detector_monitor_task = asyncio.create_task(self._volatility_monitor_loop())
+        # 启动币安市场数据订阅来更新波动检测器
+        self._binance_market_task = asyncio.create_task(self._start_binance_market_data())
+        # 启动订单处理任务
+        self._reconcile_orders_task = asyncio.create_task(self._reconcile_orders())
         logger.info("OnlyMakerStrategy started")
 
     async def stop(self):
         """停止策略，撤单并关闭资源。"""
         self._running = False
         await self.cancel_all()
+        if self._status_check_task:
+            self._status_check_task.cancel()
+            try:
+                await self._status_check_task
+            except asyncio.CancelledError:
+                pass
         if self._atr_task:
             self._atr_task.cancel()
             try:
@@ -141,10 +170,22 @@ class OnlyMakerStrategy:
                 await self._market_stats_monitor_task
             except asyncio.CancelledError:
                 pass
-        if self._task_processor:
-            self._task_processor.cancel()
+        if self._detector_monitor_task:
+            self._detector_monitor_task.cancel()
             try:
-                await self._task_processor
+                await self._detector_monitor_task
+            except asyncio.CancelledError:
+                pass
+        if self._binance_market_task:
+            self._binance_market_task.cancel()
+            try:
+                await self._binance_market_task
+            except asyncio.CancelledError:
+                pass
+        if self._reconcile_orders_task:
+            self._reconcile_orders_task.cancel()
+            try:
+                await self._reconcile_orders_task
             except asyncio.CancelledError:
                 pass
         await self.adapter.close()
@@ -159,11 +200,34 @@ class OnlyMakerStrategy:
             mark_price = stats.get("mark_price") or stats.get("last_price")
             if mark_price is None:
                 return
-            self.mark_price = float(mark_price)
+            self.current_price = float(mark_price)
             self.last_market_stats_time = time.time()
-            logger.debug(f"当前价格：{mark_price}")
-            # 将任务放入队列中，避免阻塞
-            await self.task_queue.put(self._reconcile_orders())
+            # logger.info(f"{stats}")
+            logger.debug(f"当前价格: {mark_price}")
+        except Exception as exc:
+            logger.exception(f"on_market_stats error: {exc}")
+            
+    async def on_depth_book(self, market_id: str, stats: Dict[str, Any]):
+        """订单簿回调，更新 current_price 并驱动挂单逻辑。"""
+        try:
+            asks = stats.get("asks")
+            bids = stats.get("bids")
+            
+            # 对 asks 和 bids 根据价格进行正序排序
+            if asks:
+                asks.sort(key=lambda x: float(x[0]))
+            if bids:
+                bids.sort(key=lambda x: float(x[0]))
+            
+            ask_low_price = float(asks[0][0])
+            bid_high_price = float(bids[-1][0])
+            ask_low_size = float(asks[0][1])
+            bid_high_size = float(bids[-1][1])
+            micro_price = (bid_high_price * ask_low_size + ask_low_price * bid_high_size) / (bid_high_size + ask_low_size)
+            self.current_price = round(micro_price, 4)
+            self.last_market_stats_time = time.time()
+            # logger.info(f"{ask_low}, {bid_high}, {mid_price}")
+            logger.debug(f"当前价格: {self.current_price}")
         except Exception as exc:
             logger.exception(f"on_market_stats error: {exc}")
 
@@ -247,31 +311,16 @@ class OnlyMakerStrategy:
         self.open_orders["ask"] = ask_orders
         
         logger.info(f"同步订单：{self.open_orders}")
-
-    async def _check_status_loop(self):
-        """每 30 秒通过 REST 全量同步订单，防止 WS 漏单。"""
-        # 首次启动延迟 30s 再拉取
-        try:
-            await asyncio.sleep(20)
-        except asyncio.CancelledError:
-            return
-
+        
+    async def _order_check_loop(self):
         while self._running:
+            await asyncio.sleep(60)
             try:
                 # 同步订单
                 async with self._lock:
                     orders = await self.adapter.get_orders_by_rest()
                     await self._refresh_open_orders(orders)
-                
-                # 检查价格距离
-                for o in self.open_orders["bid"]:
-                    delta_bps = abs(o["price"] - self.mark_price) / self.mark_price * 10000
-                    logger.info(f"当前买单, 价格：{o["price"]}, bps：{delta_bps}")
-                for o in self.open_orders["ask"]:
-                    delta_bps = abs(o["price"] - self.mark_price) / self.mark_price * 10000
-                    logger.info(f"当前卖单, 价格：{o["price"]}, bps：{delta_bps}")
-                logger.info(f"当前价格：{self.mark_price}, 持仓：{self.position_qty}, ATR：{self.current_atr}")
-                
+                    
                 # 仓位修复检查
                 if self.cfg.fix_order_enable:
                     positions = await self.adapter.get_positions()
@@ -305,7 +354,26 @@ class OnlyMakerStrategy:
                 break
             except Exception as exc:
                 logger.exception(f"订单同步任务异常: {exc}")
-            await asyncio.sleep(60)
+
+    async def _check_status_loop(self):
+        """同步运行状态"""
+        while self._running:
+            await asyncio.sleep(5)
+            try:
+                # 检查价格距离
+                logger.info("----- 当前状态 -----")
+                for o in self.open_orders["bid"]:
+                    delta_bps = abs(o["price"] - self.current_price) / self.current_price * 10000
+                    logger.info(f"当前买单: {o["id"]}, 价格：{o["price"]}, bps：{delta_bps}")
+                for o in self.open_orders["ask"]:
+                    delta_bps = abs(o["price"] - self.current_price) / self.current_price * 10000
+                    logger.info(f"当前卖单: {o["id"]}, 价格：{o["price"]}, bps：{delta_bps}")
+                logger.info(f"当前价格：{self.current_price}, 持仓：{self.position_qty}, ATR：{self.current_atr:.4f}, est_move: {self.vol_detector.est_move}")
+                logger.info("-------------------")
+            except Exception as exc:
+                logger.exception(f"同步状态异常: {exc}")
+            except asyncio.CancelledError:
+                break
             
     async def _place_fix_order(self, pos: Dict[str, Any]):
         entry_price = float(pos.get("entry_price"))
@@ -313,13 +381,13 @@ class OnlyMakerStrategy:
         is_ask = self.position_qty > 0
         if is_ask:
             # 卖单
-            if self.mark_price > entry_price:
-                entry_price = self.mark_price
+            if self.current_price > entry_price:
+                entry_price = self.current_price
             target_price = entry_price * (1 + 0.0002)
         else:
             # 买单
-            if self.mark_price < entry_price:
-                entry_price = self.mark_price
+            if self.current_price < entry_price:
+                entry_price = self.current_price
             target_price = entry_price * (1 - 0.0002)
             
         price = round(target_price, 2)
@@ -328,7 +396,7 @@ class OnlyMakerStrategy:
         order_info = {"id": order_id, "price": price, "amount": self.position_qty}
         if success:
             self.fix_order = order_info
-            logger.info(f"修复订单挂单成功: {order_info}, size={self.position_qty}, 当前价格: {self.mark_price}")
+            logger.info(f"修复订单挂单成功: {order_info}, size={self.position_qty}, 当前价格: {self.current_price}")
         else:
             logger.warning(f"修复订单挂单失败: {order_info}, size={self.position_qty}")
 
@@ -337,28 +405,35 @@ class OnlyMakerStrategy:
     # ------------------------------------------------------------------
     async def _reconcile_orders(self):
         """根据当前行情、ATR、仓位，决定挂单/撤单/重挂。"""
-        async with self._lock:
-            if self.mark_price is None:
-                return
-            
-            if self.pause:
-                return
+        while self._running:
+            async with self._lock:
+                try:
+                    await asyncio.sleep(1)  # 每1秒检查一次
+                    if self.current_price is None:
+                        return
+                    
+                    if self.atr_pause or self.detector_pause:
+                        return
 
-            if abs(self.position_qty) >= self.cfg.max_position_btc:
-                logger.info("持仓超限，撤单并暂停挂单")
-                await self.cancel_all()
-                return
+                    if abs(self.position_qty) >= self.cfg.max_position_btc:
+                        logger.debug("持仓超限，撤单并暂停挂单")
+                        await self.cancel_all()
+                        return
 
-            target_bids = self._target_prices(is_ask=False)
-            target_asks = self._target_prices(is_ask=True)
+                    target_bids = self._target_prices(is_ask=False)
+                    target_asks = self._target_prices(is_ask=True)
 
-            # # 先检查是否需要撤单/裁剪
-            await self._maybe_cancel_side("bid")
-            await self._maybe_cancel_side("ask")
+                    # # 先检查是否需要撤单/裁剪
+                    await self._maybe_cancel_side("bid")
+                    await self._maybe_cancel_side("ask")
 
-            # 决定是否补挂
-            await self._ensure_side_orders("bid", is_ask=False, target_prices=target_bids)
-            await self._ensure_side_orders("ask", is_ask=True, target_prices=target_asks)
+                    # 决定是否补挂
+                    await self._ensure_side_orders("bid", is_ask=False, target_prices=target_bids)
+                    await self._ensure_side_orders("ask", is_ask=True, target_prices=target_asks)
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.exception(f"订单处理任务异常: {exc}")
 
     async def _maybe_cancel_side(self, side: str):
         orders = list(self.open_orders.get(side) or [])
@@ -367,9 +442,9 @@ class OnlyMakerStrategy:
 
         kept: List[Dict[str, Any]] = []
         for order in orders:
-            delta_bps = abs(order["price"] - self.mark_price) / self.mark_price * 10000
+            delta_bps = abs(order["price"] - self.current_price) / self.current_price * 10000
             if delta_bps <= self.cfg.cancel_distance_bps or delta_bps >= self.cfg.rebalance_distance_bps:
-                logger.info(f"{side} 撤单，delta_bps={delta_bps:.2f} price={order['price']}, 当前价格: {self.mark_price}")
+                logger.info(f"{side} 撤单，delta_bps={delta_bps:.2f}, order_id={order["id"]}, price={order['price']}, 当前价格: {self.current_price}")
                 await self.cancel_order(order["id"])
             else:
                 kept.append(order)
@@ -377,7 +452,7 @@ class OnlyMakerStrategy:
         # 超过最大允许数量时，保留距离较远的订单，取消距离近的风险单
         max_allowed = self.cfg.max_orders_per_side
         if len(kept) > max_allowed:
-            kept_sorted = sorted(kept, key=lambda o: abs(o["price"] - self.mark_price), reverse=True)
+            kept_sorted = sorted(kept, key=lambda o: abs(o["price"] - self.current_price), reverse=True)
             to_keep = kept_sorted[:max_allowed]
             to_cancel = kept_sorted[max_allowed:]
             for order in to_cancel:
@@ -404,6 +479,13 @@ class OnlyMakerStrategy:
                 continue
             if len(existing) >= self.cfg.max_orders_per_side:
                 break
+            
+            # 每次循环都检查一次条件，防止接口慢导致的判断不及时
+            if self.atr_pause or self.detector_pause:
+                break
+
+            if abs(self.position_qty) >= self.cfg.max_position_btc:
+                break
 
             # expected_pos = self.position_qty + side_sign * (len(existing) + 1)
             # if abs(expected_pos) > self.cfg.max_position_btc:
@@ -416,7 +498,7 @@ class OnlyMakerStrategy:
             if success:
                 order_info = {"id": order_id, "price": price}
                 existing.append(order_info)
-                logger.info(f"{side} 挂单成功 price={price} size={self.cfg.order_size_btc}, 当前价格: {self.mark_price}")
+                logger.info(f"{side} 挂单成功 price={price} size={self.cfg.order_size_btc}, 当前价格: {self.current_price}")
             else:
                 logger.warning(f"{side} 挂单失败 price={price} size={self.cfg.order_size_btc}")
 
@@ -429,7 +511,7 @@ class OnlyMakerStrategy:
 
     def _target_prices(self, is_ask: bool) -> List[float]:
         """生成当前侧需要挂单的目标价列表（含间距约束）。"""
-        if self.mark_price is None:
+        if self.current_price is None:
             return []
         targets: List[float] = []
         base_bps = self.cfg.order_distance_bps
@@ -437,7 +519,7 @@ class OnlyMakerStrategy:
 
         for idx in range(self.cfg.max_orders_per_side):
             offset_bps = base_bps + idx * gap_bps
-            price = self.mark_price * (1 + offset_bps / 10000) if is_ask else self.mark_price * (1 - offset_bps / 10000)
+            price = self.current_price * (1 + offset_bps / 10000) if is_ask else self.current_price * (1 - offset_bps / 10000)
             targets.append(round(price, 2))
         return targets
 
@@ -452,30 +534,76 @@ class OnlyMakerStrategy:
                 
                 if self.last_market_stats_time is None:
                     continue
-                     
+                      
                 current_time = time.time()
                 time_since_last_update = current_time - self.last_market_stats_time
-                 
+                  
                 if time_since_last_update > 30:
                     logger.warning(f"市场数据超过30秒未更新，最后更新时间: {self.last_market_stats_time}, 当前时间: {current_time}")
                     await self._reconnect_ws_and_resubscribe()
-                     
+                      
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.exception(f"市场数据监控任务异常: {exc}")
 
-    async def process_tasks(self):
-        """后台任务处理器，处理队列中的任务。"""
+    # ------------------------------------------------------------------
+    # 波动监控
+    # ------------------------------------------------------------------
+    async def _volatility_monitor_loop(self):
+        """每秒监控一次波动检测器的状态和vol_ratio。"""
         while self._running:
             try:
-                task = await self.task_queue.get()
-                await task
-                self.task_queue.task_done()
+                await asyncio.sleep(0.1)  # 每0.1秒检查一次
+                 
+                # 检查波动检测器状态
+                if self.vol_detector.state == "HIGH_VOL":
+                    self.detector_pause = True
+                    logger.debug(f"波动检测器状态: {self.vol_detector.state}, est_move: {self.vol_detector.est_move:.2f}, 暂停挂单")
+                else:
+                    self.detector_pause = False
+                    logger.debug(f"波动检测器状态: {self.vol_detector.state}, est_move: {self.vol_detector.est_move:.2f}")
+                       
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.exception(f"任务处理器异常: {exc}")
+                logger.exception(f"波动监控任务异常: {exc}")
+
+    # ------------------------------------------------------------------
+    # Binance市场数据订阅
+    # ------------------------------------------------------------------
+    async def _start_binance_market_data(self):
+        """启动Binance市场数据订阅来更新波动检测器。"""
+        try:
+            # 将StandX市场ID转换为Binance交易对
+            binance_symbol = self._convert_to_binance_symbol(self.cfg.symbol)
+            if not binance_symbol:
+                logger.warning(f"无法将StandX符号{self.cfg.symbol}转换为Binance符号，跳过波动检测")
+                return
+                
+            # 创建Binance市场数据实例并传入波动检测器
+            from .exchanges.common_market_data import BinanceMarketData
+            self.binance_market_data = BinanceMarketData(detector=self.vol_detector)
+            
+            # 启动Binance市场数据流
+            await self.binance_market_data.stream_price(
+                symbol=binance_symbol,
+                stop_event=self.binance_stop_event,
+                proxy=self.cfg.proxy
+            )
+            
+        except Exception as exc:
+            logger.exception(f"启动Binance市场数据订阅失败: {exc}")
+
+    def _convert_to_binance_symbol(self, standx_symbol: str) -> str:
+        """将StandX符号转换为Binance符号。"""
+        # 移除StandX符号中的连字符并添加USDT后缀
+        symbol_mapping = {
+            "BTC-USD": "BTCUSDT",
+            "ETH-USD": "ETHUSDT",
+            "SOL-USD": "SOLUSDT"
+        }
+        return symbol_mapping.get(standx_symbol, "")
 
     async def _reconnect_ws_and_resubscribe(self):
         """重新连接WS并重新订阅。"""
@@ -493,6 +621,7 @@ class OnlyMakerStrategy:
                 "market_stats": self.on_market_stats,
                 "orders": self.on_orders,
                 "positions": self.on_positions,
+                "depth_book": self.on_depth_book,
             }
             await self.adapter.subscribe(callbacks, proxy=self.cfg.proxy)
             
@@ -522,15 +651,15 @@ class OnlyMakerStrategy:
                     atr_series = quota.compute_atr(df, period=self.cfg.atr_period)
                     if not atr_series.empty:
                         self.current_atr = float(atr_series.iloc[-1])
-                        logger.info(f"ATR 更新: {self.current_atr:.4f}")
+                        # logger.info(f"ATR 更新: {self.current_atr:.4f}")
                         
                 # 风控：ATR、仓位
                 if self.current_atr is not None and self.current_atr > self.cfg.max_atr:
-                    logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}, 当前价格: {self.mark_price}")
+                    logger.info(f"ATR 超阈值，撤单并暂停挂单, current atr: {self.current_atr}, 当前价格: {self.current_price}")
                     await self.cancel_all()
-                    self.pause = True
+                    self.atr_pause = True
                 else:
-                    self.pause = False
+                    self.atr_pause = False
             except asyncio.CancelledError:
                 break
             except Exception as exc:

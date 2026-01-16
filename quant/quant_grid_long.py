@@ -189,6 +189,8 @@ async def _reduce_position():
     REDUCE_MULTIPLIER = 0.7
 
     highest_lost = round(await _highest_order_lost(), 6)
+    if highest_lost < 0:
+        return
     if trading_state.available_reduce_profit * REDUCE_MULTIPLIER < highest_lost:
         # 当前动态收益不够降仓
         logger.info(

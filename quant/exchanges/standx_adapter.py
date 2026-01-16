@@ -879,6 +879,10 @@ class StandXAdapter(ExchangeInterface):
         # Subscribe to market stats
         if 'market_stats' in callbacks:
             await self._subscribe_market_stats()
+            
+        # Subscribe to depth book
+        if 'depth_book' in callbacks:
+            await self._subscribe_depth_book()
         
         # Subscribe to orders
         if 'orders' in callbacks:
@@ -1118,6 +1122,22 @@ class StandXAdapter(ExchangeInterface):
             logger.info(f"Subscribed to market stats for {self.symbol}")
         except Exception as e:
             logger.error(f"Failed to subscribe to market stats: {e}")
+            
+    async def _subscribe_depth_book(self):
+        """Subscribe to Depth Book."""
+        if not await self._wait_for_market_ws():
+            return
+        try:
+            subscribe_msg = {
+                "subscribe": {
+                    "channel": "depth_book",
+                    "symbol": self.symbol
+                }
+            }
+            await self.ws_market_client.send_json(subscribe_msg)
+            logger.info(f"Subscribed to Depth Book for {self.symbol}")
+        except Exception as e:
+            logger.error(f"Failed to subscribe to Depth Book: {e}")
 
     async def _subscribe_orders(self):
         """Subscribe to authenticated order updates."""
@@ -1175,6 +1195,12 @@ class StandXAdapter(ExchangeInterface):
                 await self.callbacks["market_stats"](str(self.market_id), stats)
             else:
                 self.callbacks["market_stats"](str(self.market_id), stats)
+                
+        elif channel == "depth_book" and "depth_book" in self.callbacks:
+            if asyncio.iscoroutinefunction(self.callbacks["depth_book"]):
+                await self.callbacks["depth_book"](str(self.market_id), data)
+            else:
+                self.callbacks["depth_book"](str(self.market_id), data)
         
         elif channel == "order" and "orders" in self.callbacks:
             # Handle order updates
