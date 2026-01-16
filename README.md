@@ -80,3 +80,4 @@ python only_maker.py
 - 建议在测试环境中先进行测试，确保一切正常后再在生产环境中运行。
 - 建议做市账号不要在客户端进行其他手动操作，以避免相互影响。
 - 建议开启STANDX_MAKER_FIX_ORDER_ENABLED，做到被吃单后修复仓位。
+- 如需自动平仓模式（挂单成交后立即市价平仓，避免持仓风险），可开启 `STANDX_MAKER_AUTO_CLOSE_POSITION=true`。默认关闭，不影响原有做市逻辑。

@@ -31,6 +31,7 @@ class MakerConfig:
     max_orders_per_side: int  # 单侧同时间最大挂单数量
     side_order_gap_bps: float  # 单侧多笔挂单之间的间距（bps）
     fix_order_enable: bool = False  # 是否启用仓位修复单
+    auto_close_position: bool = False  # 是否自动平仓（挂单成交后立即平仓）
 
     atr_period: int = 3  # ATR周期
     atr_resolution: str = "1m"
@@ -53,6 +54,7 @@ class MakerConfig:
             STANDX_MAKER_MAX_ORDERS_PER_SIDE,
             STANDX_MAKER_SIDE_ORDER_GAP_BPS,
             STANDX_MAKER_FIX_ORDER_ENABLED,
+            STANDX_MAKER_AUTO_CLOSE_POSITION,
             PROXY_URL,
         )
         proxy_config = PROXY_URL if PROXY_URL else None
@@ -67,6 +69,7 @@ class MakerConfig:
             max_orders_per_side=STANDX_MAKER_MAX_ORDERS_PER_SIDE,
             side_order_gap_bps=STANDX_MAKER_SIDE_ORDER_GAP_BPS,
             fix_order_enable=STANDX_MAKER_FIX_ORDER_ENABLED,
+            auto_close_position=STANDX_MAKER_AUTO_CLOSE_POSITION,
             proxy=proxy_config,
         )
 
@@ -250,6 +253,11 @@ class OnlyMakerStrategy:
             qty = pos.get("qty")
             if qty is not None:
                 self.position_qty = float(qty)
+            
+            # 自动平仓模式：有仓位时立即市价平仓
+            if self.cfg.auto_close_position and self.position_qty != 0:
+                await self._auto_close_position()
+                return
             
             if self.position_qty == 0 and self.fix_order is not None:
                 # 无仓位时撤掉修复单
@@ -684,6 +692,32 @@ class OnlyMakerStrategy:
         finally:
             self.open_orders["bid"] = []
             self.open_orders["ask"] = []
+
+    async def _auto_close_position(self):
+        """自动平仓：市价单平掉当前仓位"""
+        if self.position_qty == 0:
+            return
+        
+        try:
+            # 多仓用卖单平，空仓用买单平
+            is_ask = self.position_qty > 0
+            close_qty = abs(self.position_qty)
+            
+            logger.info(f"自动平仓: 仓位={self.position_qty}, 方向={'卖出' if is_ask else '买入'}, 数量={close_qty}")
+            
+            success, order_id = await self.adapter.place_single_market_order(
+                is_ask=is_ask,
+                price=0,  # 市价单不需要价格
+                amount=close_qty
+            )
+            
+            if success:
+                logger.info(f"自动平仓成功: order_id={order_id}")
+            else:
+                logger.error(f"自动平仓失败")
+                
+        except Exception as exc:
+            logger.exception(f"自动平仓异常: {exc}")
 
     # ------------------------------------------------------------------
     # 工具
