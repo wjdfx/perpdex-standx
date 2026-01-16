@@ -93,7 +93,7 @@ class OnlyMakerStrategy:
         self.detector_pause: bool = False
 
         # 波动检测器
-        self.vol_detector = AbsoluteMoveDetector(
+        self.detector = AbsoluteMoveDetector(
             window=50,
             price_threshold=40.0
         )
@@ -393,7 +393,7 @@ class OnlyMakerStrategy:
                 for o in self.open_orders["ask"]:
                     delta_bps = abs(o["price"] - self.current_price) / self.current_price * 10000
                     logger.info(f"当前卖单: {o["id"]}, 价格：{o["price"]}, bps：{delta_bps}")
-                logger.info(f"当前价格：{self.current_price}, 持仓：{self.position_qty}, ATR：{self.current_atr:.4f}, est_move: {self.vol_detector.est_move}")
+                logger.info(f"当前价格：{self.current_price}, 持仓：{self.position_qty}, ATR：{self.current_atr:.4f}, est_move: {self.detector.est_move}, 波动检查状态: {self.detector.state}")
                 logger.info("-------------------")
             except Exception as exc:
                 logger.exception(f"同步状态异常: {exc}")
@@ -436,15 +436,15 @@ class OnlyMakerStrategy:
                 try:
                     await asyncio.sleep(1)  # 每1秒检查一次
                     if self.current_price is None:
-                        return
+                        continue
                     
                     if self.atr_pause or self.detector_pause:
-                        return
+                        continue
 
                     if abs(self.position_qty) >= self.cfg.max_position_btc:
                         logger.debug("持仓超限，撤单并暂停挂单")
                         await self.cancel_all()
-                        return
+                        continue
 
                     target_bids = self._target_prices(is_ask=False)
                     target_asks = self._target_prices(is_ask=True)
@@ -583,12 +583,12 @@ class OnlyMakerStrategy:
                 await asyncio.sleep(0.1)  # 每0.1秒检查一次
                  
                 # 检查波动检测器状态
-                if self.vol_detector.state == "HIGH_VOL":
+                if self.detector.state == "HIGH_VOL":
                     self.detector_pause = True
-                    logger.debug(f"波动检测器状态: {self.vol_detector.state}, est_move: {self.vol_detector.est_move:.2f}, 暂停挂单")
+                    logger.debug(f"波动检测器状态: {self.detector.state}, est_move: {self.detector.est_move:.2f}, 暂停挂单")
                 else:
                     self.detector_pause = False
-                    logger.debug(f"波动检测器状态: {self.vol_detector.state}, est_move: {self.vol_detector.est_move:.2f}")
+                    logger.debug(f"波动检测器状态: {self.detector.state}, est_move: {self.detector.est_move:.2f}")
                        
             except asyncio.CancelledError:
                 break
@@ -609,7 +609,7 @@ class OnlyMakerStrategy:
                 
             # 创建Binance市场数据实例并传入波动检测器
             from .exchanges.common_market_data import BinanceMarketData
-            self.binance_market_data = BinanceMarketData(detector=self.vol_detector)
+            self.binance_market_data = BinanceMarketData(detector=self.detector)
             
             # 启动Binance市场数据流
             await self.binance_market_data.stream_price(
