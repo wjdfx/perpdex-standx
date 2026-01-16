@@ -32,6 +32,10 @@ class AbsoluteMoveDetector:
 
     def on_book(self, bid, ask):
         mid = (bid + ask) * 0.5
+        
+        if mid == self.last_mid:
+            # 价格没变：直接忽略这个 tick
+            return
 
         if self.last_mid is not None:
             r = math.log(mid / self.last_mid)
@@ -40,6 +44,8 @@ class AbsoluteMoveDetector:
             if len(self.r2_window) >= self.r2_window.maxlen:
                 self._check(mid)
         self.last_mid = mid
+        
+        # print(f"Window: {len(self.r2_window)}, Mid: {self.last_mid}, Est Move: {self.est_move:.2f} USDT, State: {self.state}")
 
     def _check(self, mid):
         var = sum(self.r2_window) / len(self.r2_window)
@@ -48,8 +54,6 @@ class AbsoluteMoveDetector:
         # 换算成“价格幅度”
         est_move = mid * sigma
         self.est_move = est_move
-        
-        # print(f"Window: {len(self.r2_window)}, Mid: {self.last_mid}, Est Move: {self.est_move:.2f} USDT, State: {self.state}")
         
         if est_move > self.price_threshold:
             if self.state != "HIGH_VOL":
