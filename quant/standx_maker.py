@@ -11,6 +11,7 @@ from . import quota
 from .exchanges.standx_adapter import StandXAdapter
 from .exchanges.common_market_data import AbsoluteMoveDetector
 from common.dingtalk_notify import DingTalkNotifier
+from common.position_notifier import PositionNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +115,10 @@ class OnlyMakerStrategy:
         self.binance_market_data = None
         self.binance_stop_event = asyncio.Event()
         
-        # 钉钉通知
-        from common.config import DINGTALK_ACCESS_TOKEN, DINGTALK_KEYWORD
-        self.notifier = DingTalkNotifier(DINGTALK_ACCESS_TOKEN, keyword=DINGTALK_KEYWORD, proxy=config.proxy)
-        self._prev_position_qty: float = 0.0  # 用于检测仓位变化
+        # 钉钉通知（初始化在 start 中完成，需要 wallet_address）
+        from common.config import DINGTALK_WEBHOOK, DINGTALK_KEYWORD
+        self._dingtalk_notifier = DingTalkNotifier(DINGTALK_WEBHOOK, keyword=DINGTALK_KEYWORD, proxy=config.proxy)
+        self._position_notifier: Optional[PositionNotifier] = None
 
     # ------------------------------------------------------------------
     # 公共方法
@@ -126,6 +127,13 @@ class OnlyMakerStrategy:
         """初始化并开始策略。"""
         self._running = True
         await self.adapter.initialize_client()
+        
+        # 初始化仓位通知器（需要 wallet_address）
+        self._position_notifier = PositionNotifier(
+            notifier=self._dingtalk_notifier,
+            address=self.adapter.wallet_address,
+            symbol=self.cfg.symbol,
+        )
 
         callbacks = {
             # "market_stats": self.on_market_stats,
@@ -260,25 +268,10 @@ class OnlyMakerStrategy:
             if qty is not None:
                 new_qty = float(qty)
                 
-                # 检测吃单：仓位从0变为非0，或仓位发生变化
-                if new_qty != self._prev_position_qty and new_qty != 0:
-                    # 计算成交方向和数量
-                    delta = new_qty - self._prev_position_qty
-                    side = "buy" if delta > 0 else "sell"
-                    filled_qty = abs(delta)
-                    
-                    # 发送钉钉通知
-                    asyncio.create_task(self.notifier.notify_order_filled(
-                        address=self.adapter.wallet_address,
-                        symbol=self.cfg.symbol,
-                        side=side,
-                        price=self.current_price or 0,
-                        qty=filled_qty,
-                        position_qty=new_qty,
-                        current_price=self.current_price,
-                    ))
+                # 处理仓位变化通知（自动判断开仓/减仓/清仓）
+                if self._position_notifier:
+                    self._position_notifier.on_position_change(new_qty, self.current_price)
                 
-                self._prev_position_qty = new_qty
                 self.position_qty = new_qty
             
             # 自动平仓模式：有仓位时立即市价平仓

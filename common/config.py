@@ -49,6 +49,6 @@ STANDX_MAKER_SIDE_ORDER_GAP_BPS = float(os.getenv('STANDX_MAKER_SIDE_ORDER_GAP_B
 STANDX_MAKER_FIX_ORDER_ENABLED = os.getenv('STANDX_MAKER_FIX_ORDER_ENABLED', 'false').lower() == 'true'
 STANDX_MAKER_AUTO_CLOSE_POSITION = os.getenv('STANDX_MAKER_AUTO_CLOSE_POSITION', 'false').lower() == 'true'
 
-# 钉钉通知配置（access_token 为空时关闭通知）
-DINGTALK_ACCESS_TOKEN = os.getenv('DINGTALK_ACCESS_TOKEN', '')
+# 钉钉通知配置（webhook 为空时关闭通知）
+DINGTALK_WEBHOOK = os.getenv('DINGTALK_WEBHOOK', '')  # 完整的钉钉机器人 Webhook 地址
 DINGTALK_KEYWORD = os.getenv('DINGTALK_KEYWORD', 'Standx')  # 钉钉机器人关键词
