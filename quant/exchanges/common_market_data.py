@@ -21,54 +21,63 @@ logger = logging.getLogger(__name__)
 class AbsoluteMoveDetector:
     def __init__(
         self,
-        window=50,                # 最近 N 次 bookTicker
-        price_threshold=40.0,     # USDT
+        window_ms=200,
+        danger_threshold=60.0,
+        recover_threshold=25.0,
     ):
-        self.last_mid = None
-        self.r2_window = deque(maxlen=window)
-        self.price_threshold = price_threshold
-        self.est_move = 0.0
+        self.window_ms = window_ms
+        self.danger_threshold = danger_threshold
+        self.recover_threshold = recover_threshold
+        self.danger_move = 0.0
+
+        self.prices = deque()  # (timestamp_ms, mid)
         self.state = "NORMAL"
 
     def on_book(self, bid, ask):
         mid = (bid + ask) * 0.5
-        
-        if mid == self.last_mid:
-            # 价格没变：直接忽略这个 tick
+        now = time.time() * 1000  # ms
+
+        # 忽略价格没变化的推送（关键）
+        if self.prices and self.prices[-1][1] == mid:
             return
 
-        if self.last_mid is not None:
-            r = math.log(mid / self.last_mid)
-            self.r2_window.append(r * r)
+        self.prices.append((now, mid))
+        self._expire_old(now)
+        self._check()
 
-            if len(self.r2_window) >= self.r2_window.maxlen:
-                self._check(mid)
-        self.last_mid = mid
-        
-        # print(f"Window: {len(self.r2_window)}, Mid: {self.last_mid}, Est Move: {self.est_move:.2f} USDT, State: {self.state}")
+    def _expire_old(self, now):
+        cutoff = now - self.window_ms
+        while self.prices and self.prices[0][0] < cutoff:
+            self.prices.popleft()
 
-    def _check(self, mid):
-        var = sum(self.r2_window) / len(self.r2_window)
-        sigma = math.sqrt(var)
+    def _check(self):
+        if len(self.prices) < 2:
+            return
 
-        # 换算成“价格幅度”
-        est_move = mid * sigma
-        self.est_move = est_move
-        
-        if est_move > self.price_threshold:
-            if self.state != "HIGH_VOL":
-                self.state = "HIGH_VOL"
-                self.on_high_vol(est_move)
-        else:
+        mids = [p for _, p in self.prices]
+        danger_move = max(mids) - min(mids)
+        self.danger_move = danger_move
+
+        if danger_move >= self.danger_threshold:
+            if self.state != "HIGH_RISK":
+                self.state = "HIGH_RISK"
+                self.on_high_risk(danger_move)
+        elif danger_move <= self.recover_threshold:
             if self.state != "NORMAL":
                 self.state = "NORMAL"
-                self.on_normal(est_move)
+                self.on_recover(danger_move)
 
-    def on_high_vol(self, est_move):
-        print(f"[HIGH_VOL] est_move={est_move:.2f} USDT")
+    def on_high_risk(self, danger_move):
+        print(
+            f"[HIGH_RISK] "
+            f"{danger_move:.2f} USDT in {self.window_ms}ms"
+        )
 
-    def on_normal(self, est_move):
-        print(f"[NORMAL] est_move={est_move:.2f} USDT")
+    def on_recover(self, danger_move):
+        print(
+            f"[RECOVER] "
+            f"{danger_move:.2f} USDT"
+        )
 
 class BinanceMarketData:
     """
