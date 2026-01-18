@@ -1,8 +1,13 @@
 import quant.quant_grid_long as quant_grid_long
 import asyncio
 import sys
+import os
 from enum import Enum
 from typing import Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class ExchangeType(Enum):
@@ -11,42 +16,33 @@ class ExchangeType(Enum):
     STANDX = "standx"
 
 
-# Exchange-specific grid configurations
-GRID_CONFIGS = {
-    "lighter": {
-        "GRID_COUNT": 3,  # 每侧网格数量
-        "GRID_AMOUNT": 0.01,  # 单网格挂单量
-        "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
-        "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
-        "MAX_POSITION": 1.0,  # 最大仓位限制
-        "DECREASE_POSITION": 0.35,  # 降低仓位触发点
-        "ALER_POSITION": 0.3,  # 警告仓位限制
-        "MARKET_ID": 0,  # 市场ID
-        "ATR_THRESHOLD": 7,  # ATR波动阈值
-    },
-    "grvt": {
-        "GRID_COUNT": 3,  # 每侧网格数量
-        "GRID_AMOUNT": 0.01,  # 单网格挂单量
-        "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
-        "MAX_TOTAL_ORDERS": 20,  # 最大活跃订单数量
-        "MAX_POSITION": 0.6,  # 最大仓位限制
-        "DECREASE_POSITION": 0.25,  # 降低仓位触发点
-        "ALER_POSITION": 0.2,  # 警告仓位限制
-        "MARKET_ID": 0,  # 市场ID
-        "ATR_THRESHOLD": 7,  # ATR波动阈值
-    },
-    "standx": {
-        "GRID_COUNT": 3,  # 每侧网格数量
-        "GRID_AMOUNT": 0.01,  # 单网格挂单量
-        "GRID_SPREAD": 0.05,  # 单网格价差（百分比）
-        "MAX_TOTAL_ORDERS": 10,  # 最大活跃订单数量
-        "MAX_POSITION": 1.0,  # 最大仓位限制
-        "DECREASE_POSITION": 0.35,  # 降低仓位触发点
-        "ALER_POSITION": 0.3,  # 警告仓位限制
-        "MARKET_ID": 0,  # 市场ID
-        "ATR_THRESHOLD": 7,  # ATR波动阈值
+def load_grid_configs() -> Dict[str, Dict[str, Any]]:
+    """
+    Load grid configurations from environment variables
+    """
+    # Load common grid configuration
+    common_config = {
+        "GRID_COUNT": int(os.getenv('GRID_COUNT', 3)),  # 每侧网格数量
+        "GRID_AMOUNT": float(os.getenv('GRID_AMOUNT', 0.01)),  # 单网格挂单量
+        "GRID_SPREAD": float(os.getenv('GRID_SPREAD', 0.05)),  # 单网格价差（百分比）
+        "MAX_TOTAL_ORDERS": int(os.getenv('MAX_TOTAL_ORDERS', 10)),  # 最大活跃订单数量
+        "MAX_POSITION": float(os.getenv('MAX_POSITION', 1.0)),  # 最大仓位限制
+        "DECREASE_POSITION": float(os.getenv('DECREASE_POSITION', 0.35)),  # 降低仓位触发点
+        "ALER_POSITION": float(os.getenv('ALER_POSITION', 0.3)),  # 警告仓位限制
+        "MARKET_ID": int(os.getenv('MARKET_ID', 0)),  # 市场ID
+        "ATR_THRESHOLD": int(os.getenv('ATR_THRESHOLD', 7)),  # ATR波动阈值
     }
-}
+    
+    # Create configurations for all exchanges using the common config
+    return {
+        "lighter": common_config.copy(),
+        "grvt": common_config.copy(),
+        "standx": common_config.copy()
+    }
+
+
+# Load grid configurations from environment variables
+GRID_CONFIGS = load_grid_configs()
 
 
 def validate_exchange_type(exchange_type: str) -> str:
