@@ -1,0 +1,649 @@
+"""
+网格交易补单逻辑模块
+
+包含网格补单的核心逻辑：开仓侧/平仓侧补单、大间距补单等。
+"""
+
+import logging
+from typing import List, Optional, Tuple
+
+from . import grid_state
+
+logger = logging.getLogger(__name__)
+
+
+def calculate_grid_prices(
+    current_price: float, grid_count: int, grid_spread: float
+) -> List[float]:
+    """
+    计算网格开仓价格列表
+    
+    订单以 GRID_SPREAD 的价差比例，均匀分布在当前价格"开仓方向"一侧
+    
+    Args:
+        current_price: 当前价格
+        grid_count: 网格数量
+        grid_spread: 网格价差百分比
+        
+    Returns:
+        开仓价格列表（已排序）
+    """
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    open_prices = []
+
+    # 价差比例（百分比转换为小数）
+    spread_decimal = grid_spread / 100
+
+    # 计算网格价格
+    for i in range(grid_count):
+        distance = (i + 1) * spread_decimal
+        if not OPEN_SIDE_IS_ASK:
+            # 做多: 开仓价格在当前价格 BELOW
+            price = current_price * (1 - distance)
+        else:
+            # 做空: 开仓价格在当前价格 ABOVE
+            price = current_price * (1 + distance)
+
+        open_prices.append(round(price, 2))
+
+    # 排序价格（从低到高）
+    open_prices.sort()
+
+    return open_prices
+
+
+async def replenish_grid(filled_signal: bool, trade_price: float = 0.0):
+    """
+    补充网格订单逻辑
+    
+    基于原始订单价格分布和当前价格，计算补充订单的价格和方向
+    
+    Args:
+        filled_signal: 是否有订单成交
+        trade_price: 成交价格
+    """
+    trading_state = grid_state.trading_state
+    
+    if trading_state.grid_pause:
+        logger.info("网格交易处于暂停状态，跳过补单")
+        return
+
+    if trading_state.open_orders_count == 0 and trading_state.close_orders_count == 0:
+        # 初始化网格交易
+        from .quant_grid_universal import initialize_grid_trading
+        if not await initialize_grid_trading(trading_state.grid_trading):
+            logger.exception("网格交易初始化失败，退出")
+            return
+
+    try:
+        if filled_signal:
+            # 开仓侧被吃单 (e.g. Long Buy filled)
+            await _on_open_side_filled(trade_price)
+            # 平仓侧被吃单 (e.g. Long Sell filled)
+            await _on_close_side_filled(trade_price)
+
+        # 大间距补单
+        await _over_range_replenish_order()
+
+        # 平仓侧补充不少于配置单的数量
+        if trading_state.available_position_size > 0:
+            await _replenish_config_close_orders()
+
+    except Exception:
+        logger.exception(f"补充网格订单时发生错误")
+
+
+async def _on_open_side_filled(trade_price: float = 0.0):
+    """
+    开仓侧被吃单到需要补单时 (Position Increased)
+    
+    Args:
+        trade_price: 成交价格
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    
+    # 如果上一次成交是平仓侧，则跳过
+    if trading_state.last_filled_order_is_close_side:
+        return
+
+    logger.info("开仓侧被吃单补单")
+    orders = []
+
+    # 1. 补充开仓单 (继续建仓)
+    if (
+        not trading_state.grid_pause
+        and trading_state.open_orders_count < GRID_CONFIG["GRID_COUNT"]
+    ):
+        new_open_order = await _calc_next_open_side_open_order()
+        if new_open_order:
+            orders.append(new_open_order)
+
+    # 2. 补充平仓单 (配对止盈单)
+    new_close_order = await _calc_next_open_side_close_order(trade_price)
+    if new_close_order:
+        orders.append(new_close_order)
+    else:
+        # 如果平仓单不符合补单条件，取消本次双侧补单
+        return
+
+    if orders:
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+        if success:
+            for idx, oid in enumerate(order_ids):
+                is_ask, price, _ = orders[idx]
+                if is_ask:
+                    trading_state.sell_orders[oid] = price
+                else:
+                    trading_state.buy_orders[oid] = price
+            logger.info(
+                f"开仓侧被吃单补充订单成功: "
+                f"{[('卖单' if is_ask else '买单', price) for is_ask, price, _ in orders]}, "
+                f"订单ID={order_ids}"
+            )
+        else:
+            logger.error("开仓侧补充订单 place_multi_orders 失败")
+
+
+async def _calc_next_open_side_open_order() -> Optional[Tuple[bool, float, float]]:
+    """
+    计算基于开仓侧方向的下一个开仓单 (Further into the trend)
+    
+    Returns:
+        (is_ask, price, amount) 元组，或 None
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    # 获取"最远"的开仓价
+    # 做多: 最低价。做空: 最高价。
+
+    if trading_state.open_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            furthest_price = min(trading_state.open_orders.values())
+        else:  # 做空
+            furthest_price = max(trading_state.open_orders.values())
+    else:
+        # 无开仓订单时的回退逻辑
+        multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
+        furthest_price = trading_state.current_price + (
+            trading_state.active_grid_signle_price * multiplier
+        )
+
+    # 计算下一个价格
+    # 做多: 最低价 - Step。做空: 最高价 + Step。
+    multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
+    new_price = round(
+        furthest_price + (trading_state.active_grid_signle_price * multiplier), 2
+    )
+
+    # 安全检查：
+    # 做多: 新价格必须 < 当前价格
+    # 做空: 新价格必须 > 当前价格
+
+    if not OPEN_SIDE_IS_ASK:  # 做多
+        while new_price >= trading_state.current_price:
+            new_price = round(new_price - trading_state.active_grid_signle_price, 2)
+    else:  # 做空
+        while new_price <= trading_state.current_price:
+            new_price = round(new_price + trading_state.active_grid_signle_price, 2)
+
+    amount = GRID_CONFIG["GRID_AMOUNT"]
+    return (OPEN_SIDE_IS_ASK, new_price, amount)
+
+
+async def _calc_next_open_side_close_order(
+    trade_price: float = 0.0,
+) -> Optional[Tuple[bool, float, float]]:
+    """
+    计算基于开仓侧方向的配套平仓单
+    
+    Args:
+        trade_price: 成交价格
+        
+    Returns:
+        (is_ask, price, amount) 元组，或 None
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    # 1. 获取"最近"的平仓订单价格
+    # 做多: 卖单，"最近" = 最低卖价
+    # 做空: 买单，"最近" = 最高买价
+
+    nearest_close_price = None
+    if trading_state.close_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多 (平仓=卖)
+            nearest_close_price = min(trading_state.close_orders.values())
+        else:  # 做空 (平仓=买)
+            nearest_close_price = max(trading_state.close_orders.values())
+
+    # 2. 获取"最近"的开仓订单价格
+    nearest_open_price = None
+    if trading_state.open_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            nearest_open_price = max(trading_state.open_orders.values())
+        else:  # 做空
+            nearest_open_price = min(trading_state.open_orders.values())
+
+    # 默认值
+    if nearest_close_price is None:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            nearest_close_price = (
+                trading_state.current_price + trading_state.base_grid_single_price * 2
+            )
+        else:  # 做空
+            nearest_close_price = (
+                trading_state.current_price - trading_state.base_grid_single_price * 2
+            )
+
+    if nearest_open_price is None:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            nearest_open_price = (
+                trading_state.current_price - trading_state.base_grid_single_price
+            )
+        else:  # 做空
+            nearest_open_price = (
+                trading_state.current_price + trading_state.base_grid_single_price
+            )
+
+    # 3. 计算新的平仓价格
+    # 默认: 向"更近"的方向推一步
+    # 做多: 最低卖 - Step
+    # 做空: 最高买 + Step
+
+    multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
+    new_close_price = round(
+        nearest_close_price + (trading_state.base_grid_single_price * multiplier), 2
+    )
+
+    # 4. 使用成交价格覆盖逻辑
+    if trade_price > 0:
+        # 做多: 成交(买) + Step
+        # 做空: 成交(卖) - Step
+        price_multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+        new_close_price = round(
+            trade_price + (trading_state.base_grid_single_price * price_multiplier), 2
+        )
+
+    # 5. 间距检查
+    diff = abs(new_close_price - trading_state.current_price)
+    if diff > trading_state.base_grid_single_price * 2:
+        safe_multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+        new_close_price = round(
+            nearest_open_price
+            + (
+                trading_state.active_grid_signle_price
+                + trading_state.base_grid_single_price
+            )
+            * safe_multiplier,
+            2,
+        )
+
+    # 6. 当前价格安全检查
+    # 做多: 平仓价格 (卖) 必须 > 当前价格
+    # 做空: 平仓价格 (买) 必须 < 当前价格
+
+    if not OPEN_SIDE_IS_ASK:  # 做多
+        if trading_state.current_price < new_close_price:
+            return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
+    else:  # 做空
+        if trading_state.current_price > new_close_price:
+            return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
+
+    return None
+
+
+async def _on_close_side_filled(trade_price: float = 0.0):
+    """
+    平仓侧被吃单到需要补单时 (Profit Taking)
+    
+    Args:
+        trade_price: 成交价格
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    
+    # 如果上一次成交不是平仓侧（是开仓侧），则跳过
+    if not trading_state.last_filled_order_is_close_side:
+        return
+
+    logger.info("平仓侧被吃单补单")
+    orders = []
+
+    # 1. 补充开仓单 (Buy Back)
+    if not trading_state.grid_pause:
+        new_open_order = await _calc_next_close_side_open_order()
+        if new_open_order:
+            orders.append(new_open_order)
+
+    # 2. 补充平仓单 (如果还有剩余仓位需要止盈)
+    current_close_orders_volume = (
+        trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
+    )
+
+    if (
+        trading_state.available_position_size
+        > current_close_orders_volume + GRID_CONFIG["GRID_AMOUNT"]
+        and trading_state.close_orders_count > 0
+    ):
+        new_close_order = await _calc_next_close_side_close_order()
+        if new_close_order:
+            orders.append(new_close_order)
+
+    if orders:
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+        if success:
+            for idx, oid in enumerate(order_ids):
+                is_ask, price, _ = orders[idx]
+                if is_ask:
+                    trading_state.sell_orders[oid] = price
+                else:
+                    trading_state.buy_orders[oid] = price
+            logger.info(
+                f"平仓侧被吃单补充订单成功: "
+                f"{[('卖单' if is_ask else '买单', price) for is_ask, price, _ in orders]}, "
+                f"订单ID={order_ids}"
+            )
+        else:
+            logger.error("平仓侧补充订单 place_multi_orders 失败")
+
+
+async def _calc_next_close_side_open_order() -> Optional[Tuple[bool, float, float]]:
+    """
+    计算基于平仓侧成交后的补充开仓单 (Buy Back)
+    
+    Returns:
+        (is_ask, price, amount) 元组
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    # 做多: 我们卖高了，想低买回来
+    # 做空: 我们买低了，想高卖回来
+
+    nearest_open_price = None
+    if trading_state.open_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            nearest_open_price = max(trading_state.open_orders.values())
+        else:  # 做空
+            nearest_open_price = min(trading_state.open_orders.values())
+
+    if nearest_open_price is None:
+        nearest_open_price = trading_state.current_price
+
+    # 计算新的开仓价格
+    multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+    new_open_price = round(
+        nearest_open_price + (trading_state.active_grid_signle_price * multiplier), 2
+    )
+
+    return (OPEN_SIDE_IS_ASK, new_open_price, GRID_CONFIG["GRID_AMOUNT"])
+
+
+async def _calc_next_close_side_close_order() -> Optional[Tuple[bool, float, float]]:
+    """
+    计算基于平仓侧成交后的补充平仓单 (Further Profit Taking)
+    
+    Returns:
+        (is_ask, price, amount) 元组
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    # 做多: 最高卖 + Step
+    # 做空: 最低买 - Step
+
+    furthest_close_price = None
+    if trading_state.close_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            furthest_close_price = max(trading_state.close_orders.values())
+        else:  # 做空
+            furthest_close_price = min(trading_state.close_orders.values())
+
+    if furthest_close_price is None:
+        furthest_close_price = trading_state.current_price
+
+    multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+    new_close_price = round(
+        furthest_close_price + (trading_state.active_grid_signle_price * multiplier), 2
+    )
+
+    return (CLOSE_SIDE_IS_ASK, new_close_price, GRID_CONFIG["GRID_AMOUNT"])
+
+
+async def _over_range_replenish_order():
+    """
+    大间距补单逻辑
+    
+    当开仓侧和平仓侧之间的间距过大时，在中间补充订单。
+    """
+    trading_state = grid_state.trading_state
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if trading_state.grid_pause:
+        return
+
+    # 获取最近的平仓价格
+    nearest_close_price = None
+    if trading_state.close_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            nearest_close_price = min(trading_state.close_orders.values())
+        else:  # 做空
+            nearest_close_price = max(trading_state.close_orders.values())
+    else:
+        multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+        nearest_close_price = trading_state.current_price + (
+            trading_state.active_grid_signle_price * 2 * multiplier
+        )
+
+    # 获取最近的开仓价格
+    nearest_open_price = None
+    if trading_state.open_orders_count > 0:
+        if not OPEN_SIDE_IS_ASK:  # 做多
+            nearest_open_price = max(trading_state.open_orders.values())
+        else:  # 做空
+            nearest_open_price = min(trading_state.open_orders.values())
+    else:
+        multiplier = -1 if not OPEN_SIDE_IS_ASK else 1
+        nearest_open_price = trading_state.current_price + (
+            trading_state.active_grid_signle_price * 2 * multiplier
+        )
+
+    # 检查间距
+    gap = abs(nearest_close_price - nearest_open_price)
+
+    if gap > 2.5 * trading_state.active_grid_signle_price:
+        # 间距过大！
+
+        # 1. 补充开仓侧
+        dist_to_open = abs(trading_state.current_price - nearest_open_price)
+        if dist_to_open > trading_state.active_grid_signle_price * 1.5:
+            await _over_range_replenish_open_order(nearest_open_price)
+
+        # 2. 补充平仓侧
+        dist_to_close = abs(nearest_close_price - trading_state.current_price)
+        if dist_to_close > trading_state.active_grid_signle_price * 1.5:
+            if trading_state.available_position_size > 0:
+                await _over_range_replenish_close_order(nearest_open_price)
+
+
+async def _over_range_replenish_open_order(nearest_open_price: float):
+    """
+    大间距开仓补单
+    
+    Args:
+        nearest_open_price: 最近的开仓价格
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if trading_state.open_orders_count < GRID_CONFIG["MAX_TOTAL_ORDERS"]:
+        # 如果上次成交是开仓侧且存在订单，不再补开仓单
+        if (
+            not trading_state.last_filled_order_is_close_side
+            and trading_state.open_orders_count > 0
+            and trading_state.close_orders_count > 0
+        ):
+            return
+
+        multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+        new_price = round(
+            nearest_open_price + (trading_state.active_grid_signle_price * multiplier),
+            2,
+        )
+
+        # 检查当前价格
+        if not OPEN_SIDE_IS_ASK:
+            if new_price >= trading_state.current_price:
+                return
+        else:
+            if new_price <= trading_state.current_price:
+                return
+
+        success, order_id = await trading_state.grid_trading.place_single_order(
+            is_ask=OPEN_SIDE_IS_ASK,
+            price=new_price,
+            amount=GRID_CONFIG["GRID_AMOUNT"],
+        )
+        if success:
+            if OPEN_SIDE_IS_ASK:
+                trading_state.sell_orders[order_id] = new_price
+            else:
+                trading_state.buy_orders[order_id] = new_price
+            logger.info(f"大间距开仓补单成功: {order_id}, {new_price}")
+
+
+async def _over_range_replenish_close_order(nearest_open_price: float):
+    """
+    大间距平仓补单
+    
+    Args:
+        nearest_open_price: 最近的开仓价格
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    if (
+        trading_state.last_filled_order_is_close_side
+        and trading_state.close_orders_count > 0
+    ):
+        return
+
+    # 计算新的平仓价格
+    # 做多: 最高买 + 2 * Step
+    # 做空: 最低卖 - 2 * Step
+
+    multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+    new_price = round(
+        nearest_open_price + (trading_state.active_grid_signle_price * 2 * multiplier),
+        2,
+    )
+
+    # 检查当前价格
+    if not OPEN_SIDE_IS_ASK:
+        if new_price <= trading_state.current_price:
+            return
+    else:
+        if new_price >= trading_state.current_price:
+            return
+
+    success, order_id = await trading_state.grid_trading.place_single_order(
+        is_ask=CLOSE_SIDE_IS_ASK,
+        price=new_price,
+        amount=GRID_CONFIG["GRID_AMOUNT"],
+    )
+    if success:
+        if CLOSE_SIDE_IS_ASK:
+            trading_state.sell_orders[order_id] = new_price
+        else:
+            trading_state.buy_orders[order_id] = new_price
+        logger.info(f"大间距平仓补单成功: {order_id}, {new_price}")
+
+
+async def _replenish_config_close_orders():
+    """
+    平仓侧补充不少于配置单的数量
+    
+    只向远距离补单。
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    available_close_orders_count = (
+        trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
+    )
+
+    while (
+        trading_state.close_orders_count < GRID_CONFIG["GRID_COUNT"]
+        and trading_state.available_position_size
+        > trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
+        and trading_state.close_orders_count < available_close_orders_count
+    ):
+        # 计算最远的平仓价格
+        furthest_close_price = None
+        if trading_state.close_orders_count > 0:
+            if not OPEN_SIDE_IS_ASK:
+                furthest_close_price = max(trading_state.close_orders.values())
+            else:
+                furthest_close_price = min(trading_state.close_orders.values())
+
+        if furthest_close_price is None:
+            # 基于最近的开仓价格计算
+            if trading_state.open_orders_count > 0:
+                if not OPEN_SIDE_IS_ASK:
+                    nearest_open = max(trading_state.open_orders.values())
+                else:
+                    nearest_open = min(trading_state.open_orders.values())
+            else:
+                nearest_open = trading_state.current_price - (
+                    trading_state.active_grid_signle_price
+                    * (1 if not OPEN_SIDE_IS_ASK else -1)
+                )
+
+            multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+            furthest_close_price = nearest_open + (
+                trading_state.active_grid_signle_price * multiplier
+            )
+
+        multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+        new_price = round(
+            furthest_close_price
+            + (trading_state.active_grid_signle_price * multiplier),
+            2,
+        )
+
+        # 有效性检查
+        if not OPEN_SIDE_IS_ASK:
+            while new_price <= trading_state.current_price:
+                new_price = round(
+                    new_price + trading_state.active_grid_signle_price, 2
+                )
+        else:
+            while new_price >= trading_state.current_price:
+                new_price = round(
+                    new_price - trading_state.active_grid_signle_price, 2
+                )
+
+        success, order_id = await trading_state.grid_trading.place_single_order(
+            is_ask=CLOSE_SIDE_IS_ASK,
+            price=new_price,
+            amount=GRID_CONFIG["GRID_AMOUNT"],
+        )
+        if success:
+            if CLOSE_SIDE_IS_ASK:
+                trading_state.sell_orders[order_id] = new_price
+            else:
+                trading_state.buy_orders[order_id] = new_price

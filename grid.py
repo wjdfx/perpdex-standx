@@ -1,4 +1,5 @@
 import quant.quant_grid_long as quant_grid_long
+import quant.quant_grid_universal as quant_grid_universal
 import asyncio
 import sys
 import os
@@ -22,6 +23,7 @@ def load_grid_configs() -> Dict[str, Dict[str, Any]]:
     """
     # Load common grid configuration
     common_config = {
+        "DIRECTION": os.getenv('DIRECTION', 'LONG'),  # 交易方向
         "GRID_COUNT": int(os.getenv('GRID_COUNT', 3)),  # 每侧网格数量
         "GRID_AMOUNT": float(os.getenv('GRID_AMOUNT', 0.01)),  # 单网格挂单量
         "GRID_SPREAD": float(os.getenv('GRID_SPREAD', 0.05)),  # 单网格价差（百分比）
@@ -60,19 +62,15 @@ def validate_exchange_type(exchange_type: str) -> str:
 if __name__ == "__main__":
     # Access arguments via sys.argv
     # sys.argv[0] is the script name, sys.argv[1:] are the actual arguments
-    args = sys.argv[1:]
-    
-    if len(args) == 0:
-        # Use default value if no arguments provided
-        exchange_type = ExchangeType.LIGHTER.value
-    else:
-        # Validate the provided exchange type
-        exchange_type = validate_exchange_type(args[0])
-    
+    exchange_type = os.getenv("EXCHANGE_TYPE", ExchangeType.LIGHTER.value)
+    # Validate the provided exchange type
+    exchange_type = validate_exchange_type(exchange_type)
+
     # Get the appropriate grid configuration for the exchange type
     grid_config = GRID_CONFIGS.get(exchange_type)
     if grid_config is None:
         print(f"Error: No grid configuration found for exchange type '{exchange_type}'")
         sys.exit(1)
 
-    asyncio.run(quant_grid_long.run_grid_trading(exchange_type, grid_config))
+    # asyncio.run(quant_grid_long.run_grid_trading(exchange_type, grid_config))
+    asyncio.run(quant_grid_universal.run_grid_trading(exchange_type, grid_config))

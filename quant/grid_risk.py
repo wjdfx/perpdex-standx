@@ -1,0 +1,405 @@
+"""
+网格交易风控管理模块
+
+包含趋势检测、熔断逻辑和急涨急跌检测。
+"""
+
+import logging
+from typing import Dict, Tuple
+
+import pandas as pd
+
+from . import grid_state
+from . import quota
+
+logger = logging.getLogger(__name__)
+
+
+async def _risk_check(start: bool = False):
+    """
+    风控检查主函数
+    
+    Args:
+        start: 是否为启动时的检查
+    """
+    from .grid_position import _reduce_position
+    
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    
+    grid_trading = trading_state.grid_trading
+
+    cs_15m = await grid_trading.candle_stick(
+        market_id=GRID_CONFIG["MARKET_ID"], resolution="15m"
+    )
+
+    # 检测不利趋势 (Adverse Trend)
+    # 做多：下跌趋势不利。做空：上涨趋势不利。
+    is_adverse, details = await _check_adverse_trend(cs_15m)
+
+    if is_adverse:
+        logger.info(f"⚠️ 警告：当前15分钟线处于不利趋势, 暂停交易, {details}")
+
+    is_ema_filter, ema_filter_details = await _check_ema_reversion(cs_15m)
+    if is_ema_filter:
+        logger.info(
+            f"⚠️ 警告：当前EMA均值回归趋势不利, 暂停交易, {ema_filter_details}"
+        )
+    
+    logger.info(
+        "15分钟线不利趋势检测: %s",
+        details | {"result": is_adverse},
+    )
+    logger.info(
+        "EMA均值回归检测: %s",
+        ema_filter_details | {"result": is_ema_filter},
+    )
+
+    if is_adverse or is_ema_filter:
+        trading_state.grid_pause = True
+        if start:
+            trading_state.pause_position_exist = True
+        else:
+            if not trading_state.pause_position_exist:
+                await _save_pause_position()
+    else:
+        if trading_state.current_position_size < GRID_CONFIG["MAX_POSITION"]:
+            # 解除熔断
+            trading_state.grid_pause = False
+            trading_state.pause_position_exist = False
+
+    if (
+        trading_state.grid_pause
+        and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]
+    ):
+        # 已经熔断状态下如果还有可用仓位，下占位单
+        await _save_pause_position()
+
+    if trading_state.grid_decrease_status:
+        logger.info(f"⚠️ 警告：仓位超出降低点，开始降低仓位")
+        await _reduce_position()
+
+
+async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
+    """
+    检测不利趋势
+    
+    Args:
+        df: K线数据
+        
+    Returns:
+        (是否触发, 详情字典)
+    """
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if df is None or len(df) < 20:
+        return False, {}
+
+    ema_series = quota.compute_ema(df, period=20)
+    rsi_series = quota.compute_rsi(df, period=14)
+    adx_series, pdi_series, mdi_series = quota.compute_adx(df, period=14)
+
+    ema_value = float(ema_series.iloc[-1])
+    rsi_value = float(rsi_series.iloc[-1])
+    adx_value = float(adx_series.iloc[-1])
+    pdi_value = float(pdi_series.iloc[-1])
+    mdi_value = float(mdi_series.iloc[-1])
+    close_value = float(df["close"].iloc[-1])
+
+    # 是否存在明确趋势
+    has_trend = adx_value > 25
+
+    if not OPEN_SIDE_IS_ASK:  # 做多策略：担心下跌趋势
+        is_downtrend = close_value < ema_value
+        is_bearish_adx = pdi_value < mdi_value
+        weak_rsi = rsi_value < 50
+        result = is_downtrend and has_trend and is_bearish_adx and weak_rsi
+    else:  # 做空策略：担心上涨趋势
+        is_uptrend = close_value > ema_value
+        is_bullish_adx = pdi_value > mdi_value
+        strong_rsi = rsi_value > 50
+        result = is_uptrend and has_trend and is_bullish_adx and strong_rsi
+
+    details = {
+        "close": round(close_value, 4),
+        "ema": round(ema_value, 4),
+        "adx": round(adx_value, 4),
+        "pdi": round(pdi_value, 4),
+        "mdi": round(mdi_value, 4),
+        "rsi": round(rsi_value, 4),
+    }
+    return result, details
+
+
+async def _check_ema_reversion(df: pd.DataFrame) -> Tuple[bool, Dict]:
+    """
+    EMA 均值回归过滤器
+    
+    做多：如果价格过高于EMA，有回落风险
+    做空：如果价格过低于EMA，有反弹风险
+    
+    Args:
+        df: K线数据
+        
+    Returns:
+        (是否触发, 详情字典)
+    """
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if df is None or len(df) < 60:
+        return False, {}
+
+    ema_60 = quota.compute_ema(df, period=60, column="close")
+    ema_value = float(ema_60.iloc[-1])
+    current_price = float(df["close"].iloc[-1])
+
+    distance = (current_price - ema_value) / ema_value
+
+    threshold = 0.02
+    is_triggered = False
+
+    if not OPEN_SIDE_IS_ASK:  # 做多
+        # 担心回落。如果价格远高于EMA？
+        is_triggered = distance > threshold
+    else:  # 做空
+        # 担心反弹。如果价格远低于EMA。
+        is_triggered = distance < -threshold
+
+    return is_triggered, {"distance": round(distance, 4), "threshold": threshold}
+
+
+async def is_rapid_market_move(df: pd.DataFrame, close: float) -> Tuple[bool, Dict]:
+    """
+    急跌/急涨检测
+    
+    做多：担心急跌（价格大幅下跌）
+    做空：担心急涨（价格大幅上涨）
+    
+    Args:
+        df: K线数据
+        close: 当前收盘价
+        
+    Returns:
+        (是否触发, 详情字典)
+    """
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if df is None:
+        return False, {}
+
+    atr_series = quota.compute_atr(df, period=7)
+    atr_value = float(atr_series.iloc[-1])
+
+    open_val = float(df["open"].iloc[-1])
+
+    change = close - open_val
+
+    threshold = 15.0  # 阈值
+
+    triggered = False
+    if not OPEN_SIDE_IS_ASK:  # 做多
+        # 急跌：下跌 > 阈值。(change < -threshold)
+        if change < -threshold:
+            triggered = True
+    else:  # 做空
+        # 急涨：上涨 > 阈值。
+        if change > threshold:
+            triggered = True
+
+    return triggered, {"atr": atr_value, "change": change}
+
+
+async def _save_pause_position():
+    """
+    熔断时创建占位仓位订单
+    
+    拆分规则：
+    - 如果仓位 > 4倍 GRID_AMOUNT，拆分为多个订单
+    - 每个订单数量在 2-3 倍 GRID_AMOUNT 之间
+    - 围绕回本价格均匀定价，间距为 active_grid_signle_price * 订单数量
+    - 回本价格上方的挂单量不少于下方，确保全部卖出后能回本
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
+    
+    try:
+        if trading_state.available_position_size < GRID_CONFIG["GRID_AMOUNT"]:
+            return
+
+        orders = []
+        total_position = trading_state.available_position_size
+        grid_amount = GRID_CONFIG["GRID_AMOUNT"]
+        
+        # 仓位形成距离（回本价格与最后交易价格的差距）
+        position_price_range = (
+            total_position / grid_amount * trading_state.active_grid_signle_price
+        )
+
+        # 成本价（回本价格）：最后交易价格 +/- 距离差价/2
+        # multiplier: 做多时为1（卖出价格需要更高），做空时为-1（买入价格需要更低）
+        multiplier = 1 if not OPEN_SIDE_IS_ASK else -1
+        
+        if trading_state.last_trade_price <= 0:
+            return
+            
+        # 计算回本价格
+        breakeven_price = trading_state.last_trade_price + (position_price_range / 2 * multiplier)
+
+        # 判断是否需要拆分订单
+        if total_position > grid_amount * 4:
+            # 需要拆分：每个订单2-3倍 GRID_AMOUNT
+            order_amounts = _split_position_into_orders(total_position, grid_amount)
+            order_count = len(order_amounts)
+            
+            # 计算价格间距：active_grid_signle_price * 订单数量
+            price_step = trading_state.active_grid_signle_price * order_count
+            
+            # 围绕回本价格均匀分布订单价格
+            # 为确保回本价格上方挂单量 >= 下方挂单量，需要计算上下分布
+            # 订单按价格从高到低（做多）或从低到高（做空）排列
+            order_prices = _calculate_order_prices(
+                breakeven_price, price_step, order_count, order_amounts, multiplier
+            )
+            
+            # 创建订单列表
+            for price, amount in zip(order_prices, order_amounts):
+                orders.append((CLOSE_SIDE_IS_ASK, round(price, 2), round(amount, 2)))
+        else:
+            # 不需要拆分，单个订单
+            orders.append((CLOSE_SIDE_IS_ASK, round(breakeven_price, 2), round(total_position, 2)))
+
+        success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
+        if success:
+            trading_state.pause_position_exist = True
+            trading_state.available_position_size = 0.0
+            logger.info(f"占位订单创建成功: {order_ids}, 订单详情: {orders}")
+        else:
+            logger.error(f"占位订单创建失败, {orders}")
+    except Exception as e:
+        logger.exception(f"创建占位订单失败: {e}")
+
+
+def _split_position_into_orders(total_position: float, grid_amount: float) -> list:
+    """
+    将仓位拆分为多个订单
+    
+    规则：每个订单数量在 2-3 倍 grid_amount 之间
+    例如：total_position=0.07, grid_amount=0.01 -> [0.02, 0.02, 0.03]
+    
+    Args:
+        total_position: 总仓位
+        grid_amount: 基础挂单数量
+        
+    Returns:
+        订单数量列表
+    """
+    min_order_size = grid_amount * 2  # 最小订单大小：2倍
+    max_order_size = grid_amount * 3  # 最大订单大小：3倍
+    
+    order_amounts = []
+    remaining = total_position
+    
+    while remaining > 0:
+        if remaining <= max_order_size:
+            # 剩余仓位可以作为一个订单
+            order_amounts.append(remaining)
+            remaining = 0
+        elif remaining <= max_order_size + min_order_size:
+            # 剩余仓位拆分为两个会导致其中一个小于最小值
+            # 所以均分
+            half = remaining / 2
+            order_amounts.append(half)
+            order_amounts.append(remaining - half)
+            remaining = 0
+        else:
+            # 取一个2倍的订单，继续处理剩余
+            order_amounts.append(min_order_size)
+            remaining -= min_order_size
+    
+    return order_amounts
+
+
+def _calculate_order_prices(
+    breakeven_price: float,
+    price_step: float,
+    order_count: int,
+    order_amounts: list,
+    multiplier: int
+) -> list:
+    """
+    计算订单价格，围绕回本价格均匀分布
+    
+    规则：
+    - 回本价格上方（对做多来说是更高的卖出价格）的挂单量 >= 下方
+    - 这样确保全部卖出后能回本
+    
+    Args:
+        breakeven_price: 回本价格
+        price_step: 价格间距
+        order_count: 订单数量
+        order_amounts: 各订单的数量列表
+        multiplier: 方向乘数（做多=1，做空=-1）
+        
+    Returns:
+        订单价格列表（与order_amounts对应）
+    """
+    # 计算上方和下方的订单数量分配
+    # 为了让上方挂单量 >= 下方，我们把数量较大的订单放在上方
+    # 先按数量降序排序，较大的放上方
+    indexed_amounts = list(enumerate(order_amounts))
+    indexed_amounts.sort(key=lambda x: x[1], reverse=True)
+    
+    # 计算每个价格位置（相对于回本价格的偏移）
+    # 位置0在回本价格，正数在上方，负数在下方
+    # 例如：3个订单 -> 位置 [1, 0, -1] 或 [0.5, -0.5] 取决于奇偶
+    if order_count == 1:
+        positions = [0]
+    else:
+        # 生成以0为中心的位置序列
+        # 例如：3个订单 -> [1, 0, -1]，4个订单 -> [1.5, 0.5, -0.5, -1.5]
+        half_count = order_count / 2
+        positions = [half_count - 0.5 - i for i in range(order_count)]
+    
+    # 将较大的订单分配到较高的位置（上方）
+    # 对于做多，multiplier=1，上方是更高的价格
+    # 对于做空，multiplier=-1，上方是更低的价格
+    result_prices = [0.0] * order_count
+    
+    for i, (original_idx, amount) in enumerate(indexed_amounts):
+        position_offset = positions[i]
+        # 计算价格：回本价格 + 位置偏移 * 价格步长 * 方向
+        price = breakeven_price + position_offset * price_step * multiplier
+        result_prices[original_idx] = price
+    
+    return result_prices
+
+
+async def _get_current_pause_position() -> float:
+    """
+    获取当前价格下熔断占位仓位
+    
+    Returns:
+        冻结仓位数量
+    """
+    trading_state = grid_state.trading_state
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    
+    if len(trading_state.pause_positions) == 0:
+        return 0
+    
+    total = 0
+    for price, amount in trading_state.pause_positions.items():
+        # 只计算未到达的价格的订单
+        # 做多（卖单）：Pending if Price > Current
+        # 做空（买单）：Pending if Price < Current
+
+        if not OPEN_SIDE_IS_ASK:
+            if price > trading_state.current_price:
+                total += amount
+        else:
+            if price < trading_state.current_price:
+                total += amount
+
+    return round(total, 6)

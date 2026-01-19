@@ -17,9 +17,9 @@ import asyncio
 import time
 import pandas as pd
 from typing import Dict, List, Optional, Set, Tuple
-from .grid_matin import GridTrading
-from .exchanges import create_exchange_adapter
-from .exchanges.order_converter import normalize_order_to_ccxt, normalize_orders_list
+from .grid_trading import GridTrading
+from exchanges import create_exchange_adapter
+from exchanges.order_converter import normalize_order_to_ccxt, normalize_orders_list
 from collections import deque
 from typing import Deque
 from common.sqlite import init_db, insert

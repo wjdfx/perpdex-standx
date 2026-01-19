@@ -7,7 +7,7 @@ import lighter
 from typing import Any, Dict, List, Tuple, Optional
 from . import quota
 from common.config import BASE_URL
-from .exchanges.interfaces import ExchangeInterface
+from exchanges.interfaces import ExchangeInterface
 
 
 logger = logging.getLogger(__name__)
@@ -200,73 +200,83 @@ class GridTrading:
         return await self.exchange.get_trades_by_rest(ask_filter, limit)
 
     @staticmethod
-    def _resolution_to_seconds(resolution: str) -> int:
+    def _resolution_to_binance_interval(resolution: str) -> str:
+        """
+        Convert resolution to Binance interval format.
+        """
         mapping = {
-            "1m": 60,
-            "3m": 180,
-            "5m": 300,
-            "15m": 900,
-            "30m": 1800,
-            "1h": 3600,
-            "4h": 14400,
-            "1d": 86400,
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1h",
+            "4h": "4h",
+            "1d": "1d",
         }
         if resolution not in mapping:
             raise ValueError(f"Unsupported resolution: {resolution}")
         return mapping[resolution]
     
+    @staticmethod
+    def _market_id_to_binance_symbol(market_id: int) -> str:
+        """
+        Convert market_id to Binance symbol.
+        """
+        # Mapping from StandX market_id to Binance symbols
+        market_id_to_binance = {
+            0: "ETHUSDT",  # ETH-USD -> ETHUSDT
+            1: "BTCUSDT",  # BTC-USD -> BTCUSDT
+            2: "SOLUSDT",  # SOL-USD -> SOLUSDT
+        }
+        return market_id_to_binance.get(market_id, "BTCUSDT")
+    
     async def candle_stick(
         self,
         market_id: int,
         resolution: str = "1m",
-        count_back: int = 200,
+        count_back: int = 100,
     ) -> pd.DataFrame:
         """
-        通过REST API获取K线数据
-
-        Returns:
-            订单列表或None（如果获取失败）
+        Get candlestick data from Binance.
         """
-        
-        resolution_seconds = self._resolution_to_seconds(resolution)
-        end_time = int(time.time())
-        start_time = end_time - resolution_seconds * count_back
-        
         try:
-            url = f"{BASE_URL}/api/v1/candles"
-            params = {
-                "market_id": market_id,
-                "resolution": resolution,
-                "start_timestamp": start_time,
-                "end_timestamp": end_time,
-                "count_back": count_back,
-            }
-            headers = {"accept": "application/json"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers) as resp:
-                    data = await resp.json()
-                    if data.get("code") != 200:
-                        logger.error(f"获取K线数据失败: {data.get('message', 'Unknown error')}")
-                        return None
-                    candlesticks = data["c"]
-                    candle_data = []
-                    for candle in candlesticks:
-                        candle_data.append(
-                            {
-                                "time": candle["t"],
-                                "open": candle["o"],
-                                "high": candle["h"],
-                                "low": candle["l"],
-                                "close": candle["c"],
-                                "volume": candle["v"],
-                            }
-                        )
-                    df = pd.DataFrame(candle_data)
-                    df["time"] = pd.to_datetime(df["time"], unit="ms")
-                    return df
+            # Convert market_id to Binance symbol
+            binance_symbol = self._market_id_to_binance_symbol(market_id)
+            
+            # Convert resolution to Binance interval
+            binance_interval = self._resolution_to_binance_interval(resolution)
+            
+            # Use BinanceMarketData to fetch klines
+            from exchanges.common_market_data import BinanceMarketData
+            binance_data = BinanceMarketData()
+            
+            # Get klines from Binance
+            df = binance_data.get_klines_df(
+                symbol=binance_symbol,
+                interval=binance_interval,
+                limit=count_back
+            )
+            
+            # Rename columns to match expected format
+            if not df.empty:
+                df = df.rename(columns={
+                    "open_time": "time",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "close": "close",
+                    "volume": "volume"
+                })
+                
+                # Select only the columns we need
+                df = df[["time", "open", "high", "low", "close", "volume"]]
+            
+            return df
+            
         except Exception as e:
-            logger.error(f"通过HTTP请求K线数据时发生错误: {e}", exc_info=True)
-            return None
+            logger.error(f"candle_stick error for market_id {market_id} ({binance_symbol}): {e}")
+            return pd.DataFrame()
 
     async def is_yindie(
         self,

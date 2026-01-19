@@ -113,7 +113,7 @@ class GrvtAdapter(ExchangeInterface):
                     return False, []
                 order_ids.append(order_id)
 
-            logger.info(f"place_multi_orders: Successfully placed {len(order_ids)} orders")
+            logger.debug(f"place_multi_orders: Successfully placed {len(order_ids)} orders")
             return True, order_ids
         except Exception as e:
             logger.error(f"place_multi_orders error: {e}")
@@ -229,7 +229,7 @@ class GrvtAdapter(ExchangeInterface):
             orders = await self.rest_client.fetch_open_orders(symbol=self.symbol)
             return orders if orders else []
         except Exception as e:
-            logger.error(f"get_orders error: {e}")
+            logger.error(f"get_orders error: {e}", stack_info=True)
             return []
 
     async def get_trades(self, limit: int = 1) -> List[dict]:
@@ -431,7 +431,7 @@ class GrvtAdapter(ExchangeInterface):
             self.ws_initialized = True
             logger.info("GRVT WebSocket initialized")
         except Exception as e:
-            logger.error(f"Failed to initialize WebSocket: {e}")
+            logger.error(f"Failed to initialize WebSocket: {e}", exc_info=True)
 
     async def _subscribe_market_stats(self):
         """Subscribe to market statistics."""
@@ -667,7 +667,7 @@ class GrvtAdapter(ExchangeInterface):
             account['positions'] = {str(pos.get('instrument', '')): pos for pos in positions.values()}
             return account
         except Exception as e:
-            logger.error(f"get_account_info error: {e}")
+            logger.error(f"get_account_info error: {e}", stack_info=True)
             return {}
         
     async def callback_general(message: dict) -> None:
