@@ -253,8 +253,17 @@ async def _save_pause_position():
             order_amounts = _split_position_into_orders(total_position, grid_amount)
             order_count = len(order_amounts)
             
-            # 计算价格间距：active_grid_signle_price * 订单数量
-            price_step = trading_state.active_grid_signle_price * order_count
+            # 计算价格间距：active_grid_signle_price * 平均订单大小(倍数)
+            # 例如：如果订单主要是2倍 GRID_AMOUNT，间距就应该是 2 * active_grid_signle_price
+            avg_multiple = (total_position / grid_amount) / order_count
+            price_step = trading_state.active_grid_signle_price * avg_multiple
+            
+            logger.info(
+                f"占位订单拆分计算: 总仓位={total_position}, 基础量={grid_amount}, "
+                f"订单数={order_count}, 平均倍数={avg_multiple:.2f}, "
+                f"单网格价差={trading_state.active_grid_signle_price}, "
+                f"订单间距={price_step:.4f}"
+            )
             
             # 围绕回本价格均匀分布订单价格
             # 为确保回本价格上方挂单量 >= 下方挂单量，需要计算上下分布
@@ -262,13 +271,46 @@ async def _save_pause_position():
             order_prices = _calculate_order_prices(
                 breakeven_price, price_step, order_count, order_amounts, multiplier
             )
+
+            # -----------------------------------------------------------
+            # 价格安全检查：确保所有挂单价格都优于当前价格
+            # 做多(卖单): 最低价必须 > 当前价
+            # 做空(买单): 最高价必须 < 当前价
+            # -----------------------------------------------------------
+            current_price = trading_state.last_trade_price
+            safe_buffer = trading_state.active_grid_signle_price * 0.5 # 安全缓冲距离
+            
+            if not OPEN_SIDE_IS_ASK: # 做多
+                min_price = min(order_prices)
+                if min_price <= current_price:
+                    offset = current_price - min_price + safe_buffer
+                    logger.info(f"占位订单价格修正(做多): 最低价{min_price} <= 当前价{current_price}, 整体上移{offset:.4f}")
+                    order_prices = [p + offset for p in order_prices]
+            else: # 做空
+                max_price = max(order_prices)
+                if max_price >= current_price:
+                    offset = max_price - current_price + safe_buffer # 正数
+                    logger.info(f"占位订单价格修正(做空): 最高价{max_price} >= 当前价{current_price}, 整体下移{offset:.4f}")
+                    order_prices = [p - offset for p in order_prices]
             
             # 创建订单列表
             for price, amount in zip(order_prices, order_amounts):
                 orders.append((CLOSE_SIDE_IS_ASK, round(price, 2), round(amount, 2)))
         else:
             # 不需要拆分，单个订单
-            orders.append((CLOSE_SIDE_IS_ASK, round(breakeven_price, 2), round(total_position, 2)))
+            # 同样应用价格检查
+            final_price = breakeven_price
+            current_price = trading_state.last_trade_price
+            safe_buffer = trading_state.active_grid_signle_price * 0.5
+
+            if not OPEN_SIDE_IS_ASK: # 做多
+                if final_price <= current_price:
+                    final_price = current_price + safe_buffer
+            else: # 做空
+                if final_price >= current_price:
+                    final_price = current_price - safe_buffer
+
+            orders.append((CLOSE_SIDE_IS_ASK, round(final_price, 2), round(total_position, 2)))
 
         success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
         if success:
