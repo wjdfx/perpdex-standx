@@ -1,5 +1,5 @@
-import quant.quant_grid_long as quant_grid_long
-import quant.quant_grid_universal as quant_grid_universal
+import grid.quant_grid_long as quant_grid_long
+import grid.quant_grid_universal as quant_grid_universal
 import asyncio
 import sys
 import os

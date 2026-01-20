@@ -45,8 +45,12 @@ async def check_order_fills(orders: dict):
             is_open_side_order = not is_ask
             is_close_side_order = is_ask
 
+        # 过滤非网格订单 (占位订单等)
         if initial_base_amount > GRID_CONFIG["GRID_AMOUNT"]:
-            # 过滤非网格订单
+            continue
+        
+        # 如果是已知的占位订单，也忽略 (防止update消息中amount为0导致的误判)
+        if client_order_index in trading_state.pause_orders:
             continue
 
         logger.info(
@@ -69,7 +73,9 @@ async def check_order_fills(orders: dict):
                 # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
                 replenish = False
                 trading_state.last_filled_order_is_close_side = is_close_side_order
-
+                
+                # ... (Logic continues unchanged) ...
+                
                 if is_ask:
                     if client_order_index in trading_state.sell_orders:
                         del trading_state.sell_orders[client_order_index]
@@ -115,6 +121,9 @@ async def check_current_orders():
     检查当前订单是否合理：
     如果有一侧订单过多，取消最远的订单
     """
+    # 优先同步最新订单状态，确保 pause_orders 和 active orders 正确分类
+    await _sync_current_orders()
+    
     trading_state = grid_state.trading_state
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
@@ -162,6 +171,10 @@ async def check_current_orders():
         cancel_count = trading_state.close_orders_count - GRID_CONFIG["MAX_TOTAL_ORDERS"] + 2
 
         for order_id, price in dict(sorted_orders).items():
+            # 双重保护：如果该订单是占位订单，绝对不取消
+            if order_id in trading_state.pause_orders:
+                continue
+                
             if len(cancel_orders) < cancel_count:
                 cancel_orders.append(order_id)
                 logger.info(f"取消最远平仓单，价格={price}, 订单ID={order_id}")
@@ -193,6 +206,9 @@ async def check_current_orders():
 
         if cancel_count > 0:
             for order_id, price in dict(sorted_orders).items():
+                if order_id in trading_state.pause_orders:
+                    continue
+                    
                 if len(cancel_orders) < cancel_count:
                     cancel_orders.append(order_id)
                     logger.info(f"取消最远平仓单(超出持仓)，价格={price}, 订单ID={order_id}")
@@ -210,9 +226,6 @@ async def check_current_orders():
     # 检查重复订单
     await _check_duplicate_orders(trading_state.buy_orders)
     await _check_duplicate_orders(trading_state.sell_orders)
-
-    # 同步订单状态
-    await _sync_current_orders()
 
 
 async def _check_duplicate_orders(orders: dict):
