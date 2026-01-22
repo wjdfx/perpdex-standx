@@ -224,7 +224,18 @@ async def _save_pause_position():
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
     
+    # 防止重入
+    if trading_state.placing_pause_order:
+        logger.warning("正在创建占位订单中，跳过本次重复调用")
+        return
+        
+    trading_state.placing_pause_order = True
+    
     try:
+        # 再次检查是否已经存在占位单（防止并发下的竞态条件）
+        if trading_state.pause_position_exist:
+            return
+
         if trading_state.available_position_size < GRID_CONFIG["GRID_AMOUNT"]:
             return
 
@@ -251,6 +262,12 @@ async def _save_pause_position():
         if total_position > grid_amount * 4:
             # 需要拆分：每个订单2-3倍 GRID_AMOUNT
             order_amounts = _split_position_into_orders(total_position, grid_amount)
+            # 安全检查：确保总量不超过可用仓位 (精度处理)
+            actual_total = sum(order_amounts)
+            if actual_total > total_position + 1e-6:
+                logger.error(f"严重错误: 拆分订单总量 {actual_total} 超过可用仓位 {total_position}，取消拆分")
+                order_amounts = [total_position]
+                
             order_count = len(order_amounts)
             
             # 计算价格间距：active_grid_signle_price * 平均订单大小(倍数)
@@ -312,6 +329,16 @@ async def _save_pause_position():
 
             orders.append((CLOSE_SIDE_IS_ASK, round(final_price, 2), round(total_position, 2)))
 
+        # 最终安全检查：再次确认可用仓位是否足够（因为是异步，可能中间变了）
+        current_available_position = trading_state.available_position_size
+        total_order_amount = sum(o[2] for o in orders)
+        
+        if total_order_amount > current_available_position + 1e-6:
+             logger.warning(
+                 f"可用仓位发生变化，放弃本次下单。计划: {total_order_amount}, 可用: {current_available_position}"
+             )
+             return
+
         success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
         if success:
             trading_state.pause_position_exist = True
@@ -321,6 +348,8 @@ async def _save_pause_position():
             logger.error(f"占位订单创建失败, {orders}")
     except Exception as e:
         logger.exception(f"创建占位订单失败: {e}")
+    finally:
+        trading_state.placing_pause_order = False
 
 
 def _split_position_into_orders(total_position: float, grid_amount: float) -> list:

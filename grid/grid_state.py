@@ -71,6 +71,8 @@ class GridTradingState:
         self.active_profit: float = 0.0  # 动态网格收益
         self.total_profit: float = 0.0  # 本次运行总收益
         self.available_reduce_profit: float = 0.0  # 可用来减仓的收益
+        
+        self.placing_pause_order: bool = False  # 是否正在进行熔断占位下单 (防止重入)
 
     @property
     def open_orders(self) -> dict[str, float]:
