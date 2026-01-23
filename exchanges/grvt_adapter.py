@@ -25,6 +25,32 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class GrvtCcxtWSWithRefresh(GrvtCcxtWS):
+    """
+    Subclass of GrvtCcxtWS that ensures the auth cookie is refreshed
+    before attempting to connect to a channel.
+    """
+
+    async def connect_channel(self, grvt_endpoint_type: GrvtWSEndpointType) -> bool:
+        """Ensure cookie is fresh before connecting (handles initial connection and reconnections)."""
+        try:
+            # refresh_cookie checks expiration internally. 
+            # This is called on EVERY connection attempt, including reconnections.
+            old_cookie = self._cookie.get('gravity') if self._cookie else None
+            await self.refresh_cookie()
+            new_cookie = self._cookie.get('gravity') if self._cookie else None
+            
+            if old_cookie != new_cookie:
+                logger.info(f"GrvtCcxtWSWithRefresh: Cookie refreshed before connecting {grvt_endpoint_type}")
+            else:
+                logger.debug(f"GrvtCcxtWSWithRefresh: Cookie still valid for {grvt_endpoint_type}")
+                
+        except Exception as e:
+            logger.error(f"Failed to refresh cookie before connecting {grvt_endpoint_type}: {e}")
+
+        return await super().connect_channel(grvt_endpoint_type)
+
+
 class GrvtAdapter(ExchangeInterface):
     """
     GRVT exchange adapter implementing the ExchangeInterface.
@@ -73,7 +99,7 @@ class GrvtAdapter(ExchangeInterface):
         )
         
         # Initialize GRVT WebSocket client
-        self.ws_client = GrvtCcxtWS(
+        self.ws_client = GrvtCcxtWSWithRefresh(
             env=self.env,
             loop=asyncio.get_event_loop(),
             # logger=logger,
