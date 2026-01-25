@@ -53,6 +53,9 @@ async def check_order_fills(orders: dict):
         if client_order_index in trading_state.pause_orders:
             continue
 
+        # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
+        replenish = False
+
         logger.info(
             f"检查订单: ID={client_order_index}, 方向={side}, "
             f"价格={price}, 状态={status}, 成交量={filled_amount}"
@@ -69,9 +72,7 @@ async def check_order_fills(orders: dict):
             if status in ["closed", "filled"] and filled_amount > 0:
                 trading_state.filled_count += 1
                 trading_state.last_trade_price = float(price)
-
-                # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
-                replenish = False
+                
                 trading_state.last_filled_order_is_close_side = is_close_side_order
                 
                 if is_ask:
