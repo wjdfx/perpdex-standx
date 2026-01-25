@@ -507,7 +507,7 @@ class GrvtAdapter(ExchangeInterface):
             # logger.info(f"Extracted Stats: {stats}")
             
             if asyncio.iscoroutinefunction(self.callbacks['market_stats']):
-                await self.callbacks['market_stats'](str(self.market_id), stats)
+                asyncio.create_task(self.callbacks['market_stats'](str(self.market_id), stats))
             else:
                 self.callbacks['market_stats'](str(self.market_id), stats)
 
@@ -536,11 +536,15 @@ class GrvtAdapter(ExchangeInterface):
                         orders_data = []
             
             # Convert orders to CCXT format
+            normalized_orders = normalize_order_to_ccxt(orders_data) if isinstance(orders_data, dict) else [normalize_order_to_ccxt(o) for o in orders_data]
+            # 这里原代码使用了 normalize_orders_list，但前面 line 12 导入的是 normalize_orders_list，
+            # 这里的 normalize_orders_list 已经在 grvt_adapter.py 顶层被使用过了，确认一下。
+            # 重新检查发现 line 539 原代码使用的是 normalize_orders_list。
+            
             normalized_orders = normalize_orders_list(orders_data)
-            # logger.info(f"Normalized Orders: {normalized_orders}")
             
             if asyncio.iscoroutinefunction(self.callbacks['orders']):
-                await self.callbacks['orders'](self.rest_client.get_trading_account_id(), normalized_orders)
+                asyncio.create_task(self.callbacks['orders'](self.rest_client.get_trading_account_id(), normalized_orders))
             else:
                 self.callbacks['orders'](self.rest_client.get_trading_account_id(), normalized_orders)
 
@@ -651,7 +655,7 @@ class GrvtAdapter(ExchangeInterface):
                 positions = {}
              
             if asyncio.iscoroutinefunction(self.callbacks['positions']):
-                await self.callbacks['positions'](self.rest_client.get_trading_account_id(), positions)
+                asyncio.create_task(self.callbacks['positions'](self.rest_client.get_trading_account_id(), positions))
             else:
                 self.callbacks['positions'](self.rest_client.get_trading_account_id(), positions)
 

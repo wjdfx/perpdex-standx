@@ -74,8 +74,6 @@ async def check_order_fills(orders: dict):
                 replenish = False
                 trading_state.last_filled_order_is_close_side = is_close_side_order
                 
-                # ... (Logic continues unchanged) ...
-                
                 if is_ask:
                     if client_order_index in trading_state.sell_orders:
                         del trading_state.sell_orders[client_order_index]
@@ -109,11 +107,12 @@ async def check_order_fills(orders: dict):
                     trading_state.total_profit += once_profit
                     trading_state.available_reduce_profit += once_profit
 
-                # 补充网格订单
-                if replenish:
-                    from .grid_replenish import replenish_grid
-                    await replenish_grid(True, float(price))
-                    trading_state.last_replenish_time = time.time()
+        # 在锁范围外补充网格订单
+        if replenish:
+            from .grid_replenish import replenish_grid
+            async with replenish_grid_lock:
+                await replenish_grid(True, float(price))
+                trading_state.last_replenish_time = time.time()
 
 
 async def check_current_orders():

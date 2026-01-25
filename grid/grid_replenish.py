@@ -647,3 +647,6 @@ async def _replenish_config_close_orders():
                 trading_state.sell_orders[order_id] = new_price
             else:
                 trading_state.buy_orders[order_id] = new_price
+        else:
+            logger.error(f"补充平仓单失败，退出循环。价格={new_price}")
+            break
