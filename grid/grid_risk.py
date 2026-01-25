@@ -335,9 +335,20 @@ async def _save_pause_position():
         
         if total_order_amount > current_available_position + 1e-6:
              logger.warning(
-                 f"可用仓位发生变化，放弃本次下单。计划: {total_order_amount}, 可用: {current_available_position}"
+                 f"可用仓位变化(计划:{total_order_amount} > 可用:{current_available_position})，执行截断策略"
              )
-             return
+             # 用户策略：当仓位不足时，直接丢弃多余的订单，保留剩余仓位不使用
+             # 例如：计划0.2，可用0.19 -> 变为0.18 (9个订单), 剩余0.01保留
+             while total_order_amount > current_available_position + 1e-6 and orders:
+                 removed = orders.pop()
+                 total_order_amount -= removed[2]
+                 logger.info(f"移除末尾订单以适应仓位: {removed}")
+            
+             if not orders:
+                 logger.warning("调整后无有效订单，放弃本次下单")
+                 return
+                 
+             logger.info(f"订单调整完成，最终计划: {round(total_order_amount, 6)}")
 
         success, order_ids = await trading_state.grid_trading.place_multi_orders(orders)
         if success:
