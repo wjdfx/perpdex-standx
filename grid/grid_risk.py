@@ -57,11 +57,11 @@ async def _risk_check(start: bool = False):
 
     if is_adverse or is_ema_filter:
         trading_state.grid_pause = True
-        if start:
-            trading_state.pause_position_exist = True
-        else:
-            if not trading_state.pause_position_exist:
-                await _save_pause_position()
+        # if start:
+        #     trading_state.pause_position_exist = True
+        # else:
+        if not trading_state.pause_position_exist:
+            await _save_pause_position()
     else:
         if trading_state.current_position_size < GRID_CONFIG["MAX_POSITION"]:
             # 解除熔断
@@ -73,6 +73,7 @@ async def _risk_check(start: bool = False):
         and trading_state.available_position_size > GRID_CONFIG["GRID_AMOUNT"]
     ):
         # 已经熔断状态下如果还有可用仓位，下占位单
+        logger.info(f"开始创建占位订单。。。。。。。。。。。。")
         await _save_pause_position()
 
     # if trading_state.grid_decrease_status:
@@ -223,7 +224,7 @@ async def _save_pause_position():
     GRID_CONFIG = grid_state.GRID_CONFIG
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
-    
+
     # 防止重入
     if trading_state.placing_pause_order:
         logger.warning("正在创建占位订单中，跳过本次重复调用")
@@ -236,7 +237,7 @@ async def _save_pause_position():
         if trading_state.pause_position_exist:
             return
 
-        if trading_state.available_position_size < GRID_CONFIG["GRID_AMOUNT"]:
+        if trading_state.available_position_size <= GRID_CONFIG["GRID_AMOUNT"]:
             return
 
         orders = []
