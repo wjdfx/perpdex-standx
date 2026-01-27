@@ -258,6 +258,10 @@ async def _save_pause_position():
             
         # 计算回本价格
         breakeven_price = trading_state.last_trade_price + (position_price_range / 2 * multiplier)
+        
+        # 应用盈利系数调整，使回本价格更有利（做多更高，做空更低）
+        profit_coefficient = 0.001
+        breakeven_price = breakeven_price * (1 + profit_coefficient * multiplier)
 
         # 判断是否需要拆分订单
         if total_position > grid_amount * 4:
