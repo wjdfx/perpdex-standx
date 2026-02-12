@@ -442,12 +442,12 @@ async def run_grid_trading(_exchange_type: str = "standx", grid_config: dict = N
                         logger.info("波动检测: %s", details | {"result": is_rapid})
                     await _risk_check()
 
-                # 补单
-                async with replenish_grid_lock:
-                    if time.time() - trading_state.last_replenish_time > 5:
-                        await check_current_orders()
-                        await reconcile_fills_from_recent_trades(limit=50)
-                        await replenish_grid(False)
+                # 补单与成交兜底对账
+                # 注意：各函数内部已管理自己的锁，外层不要再套同一把锁，避免死锁
+                if time.time() - trading_state.last_replenish_time > 5:
+                    await check_current_orders()
+                    await reconcile_fills_from_recent_trades(limit=50)
+                    await replenish_grid(False)
 
                 counter += 1
             except Exception:
