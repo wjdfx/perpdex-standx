@@ -435,6 +435,14 @@ async def run_grid_trading(_exchange_type: str = "standx", grid_config: dict = N
                             trading_state.active_grid_signle_price = (
                                 trading_state.base_grid_single_price * 2
                             )
+                            logger.info(
+                                "触发开仓侧警戒放大: base_step=%.4f -> active_step=%.4f, "
+                                "position=%.4f, alert_threshold=%.4f",
+                                trading_state.base_grid_single_price,
+                                trading_state.active_grid_signle_price,
+                                trading_state.current_position_size,
+                                CONFIG["ALER_POSITION"],
+                            )
 
                 # 定期风控检查 (每60秒)
                 if counter % 6 == 0:
