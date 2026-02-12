@@ -52,6 +52,30 @@ class StandXAdapter(ExchangeInterface):
         self.ws_authed = False
 
     @staticmethod
+    def _b58decode(value: str) -> bytes:
+        alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        base = len(alphabet)
+        num = 0
+        for ch in value:
+            idx = alphabet.find(ch)
+            if idx < 0:
+                raise ValueError("invalid base58 character")
+            num = num * base + idx
+        out = bytearray()
+        while num > 0:
+            num, rem = divmod(num, 256)
+            out.append(rem)
+        out = bytes(reversed(out))
+        # restore leading zero bytes
+        leading = 0
+        for ch in value:
+            if ch == "1":
+                leading += 1
+            else:
+                break
+        return b"\x00" * leading + out
+
+    @staticmethod
     def _generate_ephemeral_ed25519_private_key() -> bytes:
         key = ed25519.Ed25519PrivateKey.generate()
         return key.private_bytes(
@@ -77,6 +101,8 @@ class StandXAdapter(ExchangeInterface):
 
         # Support PEM copied into .env with escaped newlines.
         raw_key = raw_key.replace("\\n", "\n").strip()
+        if raw_key.startswith("ed25519:"):
+            raw_key = raw_key[len("ed25519:") :].strip()
 
         try:
             if "BEGIN" in raw_key:
@@ -106,11 +132,25 @@ class StandXAdapter(ExchangeInterface):
         except Exception:
             pass
 
+        # base58
+        try:
+            decoded = cls._b58decode(cleaned)
+            if len(decoded) in (32, 64):
+                return decoded[:32]
+        except Exception:
+            pass
+
         logger.warning(
             "Invalid STANDX_REQUEST_SIGN_PRIVATE_KEY format. "
-            "Falling back to an ephemeral Ed25519 key for this session."
+            "Falling back to an ephemeral Ed25519 key for this session. "
+            "This usually causes `invalid body signature` on trading endpoints."
         )
         return cls._generate_ephemeral_ed25519_private_key()
+
+    @staticmethod
+    def _serialize_payload(payload: Dict[str, Any]) -> str:
+        # Keep exactly one serialization path for both request body and signature payload.
+        return json.dumps(payload)
 
     async def _ensure_session(self) -> None:
         if self.session is None or self.session.closed:
@@ -127,7 +167,7 @@ class StandXAdapter(ExchangeInterface):
 
         request_id = str(uuid.uuid4())
         timestamp = int(time.time() * 1000)
-        payload_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        payload_str = self._serialize_payload(payload)
         message = f"{self.request_sign_version},{request_id},{timestamp},{payload_str}".encode("utf-8")
 
         private_key = ed25519.Ed25519PrivateKey.from_private_bytes(self._ed25519_private_key)
@@ -164,7 +204,7 @@ class StandXAdapter(ExchangeInterface):
         if params is not None:
             kwargs["params"] = params
         if payload is not None:
-            kwargs["data"] = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+            kwargs["data"] = self._serialize_payload(payload)
         if self.proxy:
             kwargs["proxy"] = self.proxy
 
