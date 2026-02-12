@@ -52,7 +52,16 @@ class StandXAdapter(ExchangeInterface):
         self.ws_authed = False
 
     @staticmethod
-    def _load_request_sign_private_key(raw_key: str) -> Optional[bytes]:
+    def _generate_ephemeral_ed25519_private_key() -> bytes:
+        key = ed25519.Ed25519PrivateKey.generate()
+        return key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+
+    @classmethod
+    def _load_request_sign_private_key(cls, raw_key: str) -> Optional[bytes]:
         """
         Accept Ed25519 private key in one of:
         - raw hex (64 chars)
@@ -60,7 +69,14 @@ class StandXAdapter(ExchangeInterface):
         - PEM private key
         """
         if not raw_key:
-            return None
+            logger.warning(
+                "STANDX_REQUEST_SIGN_PRIVATE_KEY is empty. "
+                "Falling back to an ephemeral Ed25519 key for this session."
+            )
+            return cls._generate_ephemeral_ed25519_private_key()
+
+        # Support PEM copied into .env with escaped newlines.
+        raw_key = raw_key.replace("\\n", "\n").strip()
 
         try:
             if "BEGIN" in raw_key:
@@ -90,9 +106,11 @@ class StandXAdapter(ExchangeInterface):
         except Exception:
             pass
 
-        raise ValueError(
-            "Invalid STANDX_REQUEST_SIGN_PRIVATE_KEY format. Use ed25519 raw hex/base64/PEM private key."
+        logger.warning(
+            "Invalid STANDX_REQUEST_SIGN_PRIVATE_KEY format. "
+            "Falling back to an ephemeral Ed25519 key for this session."
         )
+        return cls._generate_ephemeral_ed25519_private_key()
 
     async def _ensure_session(self) -> None:
         if self.session is None or self.session.closed:
