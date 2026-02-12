@@ -41,6 +41,7 @@ class StandXAdapter(ExchangeInterface):
         self.request_sign_version = os.getenv("STANDX_REQUEST_SIGN_VERSION", "v1").strip() or "v1"
         self.price_tick = self._safe_float_env("STANDX_PRICE_TICK", 0.1)
         self.qty_step = self._safe_float_env("STANDX_QTY_STEP", 0.001)
+        self.http_timeout_sec = self._safe_float_env("STANDX_HTTP_TIMEOUT_SEC", 8.0)
         self._ed25519_private_key = self._load_request_sign_private_key(
             os.getenv("STANDX_REQUEST_SIGN_PRIVATE_KEY", "").strip()
         )
@@ -286,20 +287,28 @@ class StandXAdapter(ExchangeInterface):
             kwargs["data"] = self._serialize_payload(payload)
         if self.proxy:
             kwargs["proxy"] = self.proxy
+        kwargs["timeout"] = aiohttp.ClientTimeout(total=self.http_timeout_sec)
 
-        async with self.session.request(method.upper(), url, **kwargs) as response:
-            text = await response.text()
-            if response.status >= 400:
-                logger.error("StandX request failed: %s %s -> %s %s", method, endpoint, response.status, text)
-                return {"code": response.status, "message": text}
+        try:
+            async with self.session.request(method.upper(), url, **kwargs) as response:
+                text = await response.text()
+                if response.status >= 400:
+                    logger.error("StandX request failed: %s %s -> %s %s", method, endpoint, response.status, text)
+                    return {"code": response.status, "message": text}
 
-            if not text:
-                return {}
+                if not text:
+                    return {}
 
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return {"text": text}
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return {"text": text}
+        except asyncio.TimeoutError:
+            logger.error("StandX request timeout: %s %s (%.2fs)", method, endpoint, self.http_timeout_sec)
+            return {"code": 408, "message": "request timeout"}
+        except Exception as e:
+            logger.error("StandX request exception: %s %s -> %s", method, endpoint, e)
+            return {"code": -1, "message": str(e)}
 
     @staticmethod
     def _unwrap_result(data: Any) -> Any:
