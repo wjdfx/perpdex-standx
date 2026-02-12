@@ -95,6 +95,24 @@ class StandXAdapter(ExchangeInterface):
         return "price tick" in msg or "not follow price tick" in msg
 
     @staticmethod
+    def _response_code(response: Any) -> int:
+        if isinstance(response, dict):
+            code = response.get("code")
+            if code is None and isinstance(response.get("result"), dict):
+                code = response["result"].get("code")
+            if code is None:
+                return 0
+            try:
+                return int(code)
+            except Exception:
+                return -1
+        return 0
+
+    @staticmethod
+    def _looks_like_exchange_order_id(order_id: str) -> bool:
+        return str(order_id).isdigit()
+
+    @staticmethod
     def _dedupe_ticks(candidates: List[float]) -> List[float]:
         out: List[float] = []
         for tick in candidates:
@@ -416,13 +434,72 @@ class StandXAdapter(ExchangeInterface):
         if not order_ids:
             return True
 
-        payload = {"cl_ord_id_list": order_ids}
-        response = await self._request("POST", "/cancel_orders", payload=payload, signed=True)
-        code = response.get("code", 0) if isinstance(response, dict) else 0
-        if code not in (0, 200, None):
-            logger.error("Failed to cancel orders: %s", response)
-            return False
-        return True
+        session_id = str(uuid.uuid4())
+        ids = [str(x) for x in order_ids]
+
+        # Try best-guess identifier first, then fallback.
+        prefer_ord_id = all(self._looks_like_exchange_order_id(x) for x in ids)
+        cancel_fields = (
+            ["ord_id_list", "cl_ord_id_list"]
+            if prefer_ord_id
+            else ["cl_ord_id_list", "ord_id_list"]
+        )
+
+        cancel_ok = False
+        last_response: Any = None
+        for field in cancel_fields:
+            payload = {field: ids}
+            response = await self._request(
+                "POST",
+                "/cancel_orders",
+                payload=payload,
+                signed=True,
+                extra_headers={"x-session-id": session_id},
+            )
+            last_response = response
+            code = self._response_code(response)
+            if code in (0, 200):
+                cancel_ok = True
+                break
+
+        if not cancel_ok:
+            # Fallback: cancel one-by-one with both keys.
+            all_single_ok = True
+            for oid in ids:
+                per_ok = False
+                for key in ("ord_id", "cl_ord_id"):
+                    response = await self._request(
+                        "POST",
+                        "/cancel_order",
+                        payload={key: oid},
+                        signed=True,
+                        extra_headers={"x-session-id": session_id},
+                    )
+                    code = self._response_code(response)
+                    if code in (0, 200):
+                        per_ok = True
+                        break
+                if not per_ok:
+                    all_single_ok = False
+                    logger.error("Failed to cancel order %s via fallback", oid)
+            if not all_single_ok:
+                logger.error("Failed to cancel orders: %s", last_response)
+                return False
+
+        # Verify cancellation against current open orders to avoid false-positive success.
+        for _ in range(3):
+            open_orders = await self.get_orders()
+            open_ids = set()
+            for o in open_orders:
+                open_ids.add(str(o.get("id", "")))
+                open_ids.add(str(o.get("clientOrderId", "")))
+            remaining = [oid for oid in ids if oid in open_ids]
+            if not remaining:
+                return True
+            await asyncio.sleep(0.25)
+
+        logger.error("Cancel verification failed, still open: %s", ids)
+        return False
 
     async def modify_grid_order(self, order_id: str, new_price: float, new_amount: float) -> bool:
         logger.warning("StandX modify is implemented as cancel + create")
