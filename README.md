@@ -1,122 +1,47 @@
-# perpdex 策略脚本
+# StandX ETH 主网网格交易程序
 
-## 简介
+本项目已精简为 `StandX` 专用版本，仅支持：
+- StandX 主网
+- ETH 市场（`ETH-USD`）
+- Python 3.12
+- API Token 认证
 
-这是一个与各个perpdex进行交互的脚本应用，目前支持lighter和grvt的网格，以及standx单纯做市。
-
-## 快速开始
-
-### 1. 创建虚拟环境
-
-建议使用 Python 虚拟环境来运行此项目，以避免依赖冲突。
+## 1. 环境准备
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-
-# 激活虚拟环境
-# Windows
-venv\Scripts\activate
-
-# macOS/Linux
-source venv/bin/activate
-```
-
-### 2. 安装依赖
-
-在激活虚拟环境后，安装项目依赖：
-
-```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. 配置环境变量
-
-首次运行时，复制 `.env.example` 文件为 `.env`，并根据您的需求修改配置：
+## 2. 配置
 
 ```bash
 cp .env.example .env
 ```
 
-然后编辑 `.env` 文件，配置相关参数如交易对、挂单距离、最大持仓等。
+必须配置：
+- `STANDX_API_TOKEN`
+- `STANDX_REQUEST_SIGN_PRIVATE_KEY`
 
-### 4. 生成 Keystore 文件
+Token 获取和签名说明请参考官方文档：
+- [StandX Docs](https://docs.standx.com/docs/about-stand-x)
+- [StandX API](https://docs.standx.com/standx-api/standx-api)
 
-项目支持两种方式生成 keystore 文件：
-
-- 生成新地址
-- 导入现有私钥
-
-运行以下命令生成 keystore 文件：
-
-```bash
-python eth_keystore.py
-```
-
-按照提示选择生成新地址或导入私钥，并完成相关操作。
-
-### 5. 运行做市脚本
-
-最后，运行以下命令启动做市机器人：
+## 3. 启动
 
 ```bash
-python only_maker.py
+python grid.py
 ```
 
-## 配置说明
+## 4. 代理（可选）
 
-项目的主要配置在 `.env` 文件中，包括：
-
-- 交易所配置（如 API 地址、私钥等）
-- 做市策略参数（如挂单距离、最大持仓等）
-- 日志配置（如日志级别、日志文件目录等）
-
-详细配置说明请参考 `.env.example` 文件中的注释。
-
-## 注意事项
-
-- 请确保在运行做市机器人之前，已正确配置 `.env` 文件和 keystore 文件。
-- 做市机器人会根据配置的策略自动挂单和撤单，请确保您的账户有足够的资金和权限。
-- 建议在测试环境中先进行测试，确保一切正常后再在生产环境中运行。
-- 建议做市账号不要在客户端进行其他手动操作，以避免相互影响。
-- 建议开启STANDX_MAKER_FIX_ORDER_ENABLED，做到被吃单后修复仓位。
-- 如需自动平仓模式（挂单成交后立即市价平仓，避免持仓风险），可开启 `STANDX_MAKER_AUTO_CLOSE_POSITION=true`。默认关闭，不影响原有做市逻辑。
-
-## StandX 钉钉通知配置
-
-支持在订单成交（被吃单）时推送钉钉机器人通知，包含地址和交易信息。
-
-### 配置方法
-
-在 `.env` 文件中添加：
+如果网络需要代理，可先执行：
 
 ```bash
-DINGTALK_WEBHOOK='https://oapi.dingtalk.com/robot/send?access_token=xxx'  # 完整的 Webhook 地址
-DINGTALK_KEYWORD=''  # 钉钉机器人安全设置中的关键词
+export https_proxy=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
 ```
 
-### 说明
-
-- **默认开启**：配置了 `DINGTALK_WEBHOOK` 后自动启用
-- **关闭通知**：将 `DINGTALK_WEBHOOK` 留空即可关闭通知
-- **关键词**：`DINGTALK_KEYWORD` 必须与钉钉机器人安全设置中的关键词一致，默认为 `Standx`
-- **通知内容**：交易对、买卖方向、成交价格、成交数量、当前仓位、钱包地址
-
-### 获取钉钉机器人 Webhook
-
-1. 在钉钉群中添加自定义机器人
-2. 安全设置选择"自定义关键词"，添加关键词（需与 `DINGTALK_KEYWORD` 一致）
-3. 复制完整的 Webhook 地址到 `DINGTALK_WEBHOOK` 配置项
-
-### 测试钉钉推送
-
-运行测试脚本验证钉钉配置：
-
-```bash
-python -m tests.test_dingtalk
-```
-
-测试选项：
-- **1**: 简单消息测试
-- **2**: 订单成交通知测试（模拟数据）
-- **3**: 全部测试
+或在 `.env` 中设置 `PROXY_URL`。

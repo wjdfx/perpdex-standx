@@ -1,12 +1,7 @@
-import json
 import logging
-import time
 import pandas as pd
-import aiohttp
-import lighter
 from typing import Any, Dict, List, Tuple, Optional
 from . import quota
-from common.config import BASE_URL
 from exchanges.interfaces import ExchangeInterface
 
 
@@ -229,7 +224,7 @@ class GridTrading:
             1: "BTCUSDT",  # BTC-USD -> BTCUSDT
             2: "SOLUSDT",  # SOL-USD -> SOLUSDT
         }
-        return market_id_to_binance.get(market_id, "BTCUSDT")
+        return market_id_to_binance.get(market_id, "ETHUSDT")
     
     async def candle_stick(
         self,

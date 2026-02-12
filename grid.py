@@ -1,76 +1,33 @@
-import grid.quant_grid_long as quant_grid_long
-import grid.quant_grid_universal as quant_grid_universal
 import asyncio
-import sys
 import os
-from enum import Enum
-from typing import Dict, Any
+from typing import Any, Dict
+
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+import grid.quant_grid_universal as quant_grid_universal
+
 load_dotenv()
 
 
-class ExchangeType(Enum):
-    LIGHTER = "lighter"
-    GRVT = "grvt"
-    STANDX = "standx"
-
-
-def load_grid_configs() -> Dict[str, Dict[str, Any]]:
-    """
-    Load grid configurations from environment variables
-    """
-    # Load common grid configuration
-    common_config = {
-        "DIRECTION": os.getenv('DIRECTION', 'LONG'),  # 交易方向
-        "GRID_COUNT": int(os.getenv('GRID_COUNT', 3)),  # 每侧网格数量
-        "GRID_AMOUNT": float(os.getenv('GRID_AMOUNT', 0.01)),  # 单网格挂单量
-        "GRID_SPREAD": float(os.getenv('GRID_SPREAD', 0.05)),  # 单网格价差（百分比）
-        "MAX_TOTAL_ORDERS": int(os.getenv('MAX_TOTAL_ORDERS', 10)),  # 最大活跃订单数量
-        "MAX_POSITION": float(os.getenv('MAX_POSITION', 1.0)),  # 最大仓位限制
-        "DECREASE_POSITION": float(os.getenv('DECREASE_POSITION', 0.35)),  # 降低仓位触发点
-        "ALER_POSITION": float(os.getenv('ALER_POSITION', 0.3)),  # 警告仓位限制
-        "MARKET_ID": int(os.getenv('MARKET_ID', 0)),  # 市场ID
-        "ATR_THRESHOLD": int(os.getenv('ATR_THRESHOLD', 7)),  # ATR波动阈值
-    }
-    
-    # Create configurations for all exchanges using the common config
+def load_grid_config() -> Dict[str, Any]:
     return {
-        "lighter": common_config.copy(),
-        "grvt": common_config.copy(),
-        "standx": common_config.copy()
+        "DIRECTION": os.getenv("DIRECTION", "LONG"),
+        "GRID_COUNT": int(os.getenv("GRID_COUNT", 3)),
+        "GRID_AMOUNT": float(os.getenv("GRID_AMOUNT", 0.01)),
+        "GRID_SPREAD": float(os.getenv("GRID_SPREAD", 0.05)),
+        "MAX_TOTAL_ORDERS": int(os.getenv("MAX_TOTAL_ORDERS", 10)),
+        "MAX_POSITION": float(os.getenv("MAX_POSITION", 1.0)),
+        "DECREASE_POSITION": float(os.getenv("DECREASE_POSITION", 0.35)),
+        "ALER_POSITION": float(os.getenv("ALER_POSITION", 0.3)),
+        # StandX ETH market is fixed for this project.
+        "MARKET_ID": 0,
+        "ATR_THRESHOLD": int(os.getenv("ATR_THRESHOLD", 7)),
     }
-
-
-# Load grid configurations from environment variables
-GRID_CONFIGS = load_grid_configs()
-
-
-def validate_exchange_type(exchange_type: str) -> str:
-    """
-    Validate that the exchange type is one of the allowed values
-    """
-    try:
-        return ExchangeType(exchange_type).value
-    except ValueError:
-        allowed_values = [e.value for e in ExchangeType]
-        print(f"Error: Invalid exchange type '{exchange_type}'. Allowed values are: {allowed_values}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
-    # Access arguments via sys.argv
-    # sys.argv[0] is the script name, sys.argv[1:] are the actual arguments
-    exchange_type = os.getenv("EXCHANGE_TYPE", ExchangeType.LIGHTER.value)
-    # Validate the provided exchange type
-    exchange_type = validate_exchange_type(exchange_type)
+    exchange_type = os.getenv("EXCHANGE_TYPE", "standx").strip().lower()
+    if exchange_type != "standx":
+        raise ValueError("This project only supports EXCHANGE_TYPE=standx")
 
-    # Get the appropriate grid configuration for the exchange type
-    grid_config = GRID_CONFIGS.get(exchange_type)
-    if grid_config is None:
-        print(f"Error: No grid configuration found for exchange type '{exchange_type}'")
-        sys.exit(1)
-
-    # asyncio.run(quant_grid_long.run_grid_trading(exchange_type, grid_config))
-    asyncio.run(quant_grid_universal.run_grid_trading(exchange_type, grid_config))
+    asyncio.run(quant_grid_universal.run_grid_trading("standx", load_grid_config()))

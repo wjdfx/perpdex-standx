@@ -4,13 +4,7 @@
 支持做多和做空两种方向的网格交易策略。
 """
 
-from common.config import (
-    BASE_URL,
-    API_KEY_PRIVATE_KEY,
-    ACCOUNT_INDEX,
-    API_KEY_INDEX,
-    PROXY_URL,
-)
+from common.config import PROXY_URL
 
 import logging
 from common.logging_config import setup_logging
@@ -24,7 +18,6 @@ from typing import Optional
 
 from .grid_trading import GridTrading
 from exchanges import create_exchange_adapter
-from exchanges.order_converter import normalize_order_to_ccxt
 
 # 导入状态管理模块
 from .grid_state import (
@@ -253,7 +246,7 @@ async def initialize_grid_trading(grid_trading: GridTrading) -> bool:
         return False
 
 
-async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = None):
+async def run_grid_trading(_exchange_type: str = "standx", grid_config: dict = None):
     """
     运行网格交易系统
     
@@ -290,18 +283,18 @@ async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = 
         OPEN_SIDE_IS_ASK as OPEN_ASK,
     )
 
-    lighter_adapter = create_exchange_adapter(
+    exchange_adapter = create_exchange_adapter(
         exchange_type=_exchange_type, market_id=CONFIG["MARKET_ID"]
     )
-    if lighter_adapter is None:
+    if exchange_adapter is None:
         logger.exception("不支持的交易所类型")
         return
-    exchange = lighter_adapter
+    exchange = exchange_adapter
 
     await exchange.initialize_client()
     auth, err = await exchange.create_auth_token()
     if err is not None:
-        logger.exception(f"创建认证令牌失败: {auth}")
+        logger.exception(f"创建认证令牌失败: {err}")
         return
 
     grid_trading = GridTrading(exchange=exchange, market_id=CONFIG["MARKET_ID"])
@@ -405,7 +398,10 @@ async def run_grid_trading(_exchange_type: str = "lighter", grid_config: dict = 
                 )
 
                 # 获取K线数据
-                cs_1m = await grid_trading.candle_stick(market_id=0, resolution="1m")
+                cs_1m = await grid_trading.candle_stick(
+                    market_id=CONFIG["MARKET_ID"],
+                    resolution="1m",
+                )
                 trading_state.candle_stick_1m = cs_1m
 
                 # 急跌/急涨 判断 (Rapid Market Move)
