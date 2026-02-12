@@ -440,9 +440,9 @@ class StandXAdapter(ExchangeInterface):
         # Try best-guess identifier first, then fallback.
         prefer_ord_id = all(self._looks_like_exchange_order_id(x) for x in ids)
         cancel_fields = (
-            ["ord_id_list", "cl_ord_id_list"]
+            ["order_id_list", "cl_ord_id_list"]
             if prefer_ord_id
-            else ["cl_ord_id_list", "ord_id_list"]
+            else ["cl_ord_id_list", "order_id_list"]
         )
 
         cancel_ok = False
@@ -461,13 +461,14 @@ class StandXAdapter(ExchangeInterface):
             if code in (0, 200):
                 cancel_ok = True
                 break
+            logger.warning("cancel_orders failed with key=%s, response=%s", field, response)
 
         if not cancel_ok:
             # Fallback: cancel one-by-one with both keys.
             all_single_ok = True
             for oid in ids:
                 per_ok = False
-                for key in ("ord_id", "cl_ord_id"):
+                for key in ("order_id", "cl_ord_id"):
                     response = await self._request(
                         "POST",
                         "/cancel_order",
