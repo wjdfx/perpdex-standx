@@ -17,7 +17,6 @@ def load_grid_config() -> Dict[str, Any]:
         "GRID_SPREAD": float(os.getenv("GRID_SPREAD", 0.05)),
         "MAX_TOTAL_ORDERS": int(os.getenv("MAX_TOTAL_ORDERS", 10)),
         "MAX_POSITION": float(os.getenv("MAX_POSITION", 1.0)),
-        "DECREASE_POSITION": float(os.getenv("DECREASE_POSITION", 0.35)),
         "ALER_POSITION": float(os.getenv("ALER_POSITION", 0.3)),
         # StandX ETH market is fixed for this project.
         "MARKET_ID": 0,
