@@ -76,9 +76,10 @@ async def _risk_check(start: bool = False):
         logger.info(f"开始创建占位订单。。。。。。。。。。。。")
         await _save_pause_position()
 
-    if trading_state.grid_decrease_status:
-        logger.info("⚠️ 警告：仓位超出降低点，开始降低仓位")
-        await _reduce_position()
+    # 降仓逻辑按当前策略要求禁用（保留状态计算，不执行自动减仓）
+    # if trading_state.grid_decrease_status:
+    #     logger.info("⚠️ 警告：仓位超出降低点，开始降低仓位")
+    #     await _reduce_position()
 
 
 async def _check_adverse_trend(df: pd.DataFrame) -> Tuple[bool, Dict]:
