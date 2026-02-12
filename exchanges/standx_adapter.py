@@ -113,6 +113,14 @@ class StandXAdapter(ExchangeInterface):
         return str(order_id).isdigit()
 
     @staticmethod
+    def _to_int_order_ids(order_ids: List[str]) -> List[int]:
+        out: List[int] = []
+        for oid in order_ids:
+            if str(oid).isdigit():
+                out.append(int(str(oid)))
+        return out
+
+    @staticmethod
     def _dedupe_ticks(candidates: List[float]) -> List[float]:
         out: List[float] = []
         for tick in candidates:
@@ -436,6 +444,8 @@ class StandXAdapter(ExchangeInterface):
 
         session_id = str(uuid.uuid4())
         ids = [str(x) for x in order_ids]
+        int_ids = self._to_int_order_ids(ids)
+        cl_ids = [x for x in ids if not self._looks_like_exchange_order_id(x)]
 
         # Try best-guess identifier first, then fallback.
         prefer_ord_id = all(self._looks_like_exchange_order_id(x) for x in ids)
@@ -448,7 +458,16 @@ class StandXAdapter(ExchangeInterface):
         cancel_ok = False
         last_response: Any = None
         for field in cancel_fields:
-            payload = {field: ids}
+            if field == "order_id_list":
+                if not int_ids:
+                    continue
+                payload = {field: int_ids}
+            else:
+                # cl_ord_id_list must be string ids
+                if not cl_ids and prefer_ord_id:
+                    # When all are numeric exchange order ids, skip this path.
+                    continue
+                payload = {field: cl_ids or ids}
             response = await self._request(
                 "POST",
                 "/cancel_orders",
@@ -469,10 +488,15 @@ class StandXAdapter(ExchangeInterface):
             for oid in ids:
                 per_ok = False
                 for key in ("order_id", "cl_ord_id"):
+                    value: Any = oid
+                    if key == "order_id":
+                        if not self._looks_like_exchange_order_id(oid):
+                            continue
+                        value = int(oid)
                     response = await self._request(
                         "POST",
                         "/cancel_order",
-                        payload={key: oid},
+                        payload={key: value},
                         signed=True,
                         extra_headers={"x-session-id": session_id},
                     )
