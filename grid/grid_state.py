@@ -71,7 +71,9 @@ class GridTradingState:
         self.active_profit: float = 0.0  # 动态网格收益
         self.total_profit: float = 0.0  # 本次运行总收益
         self.available_reduce_profit: float = 0.0  # 可用来减仓的收益
-        
+        self.processed_trade_keys: set[str] = set()  # REST成交去重键
+        self.recent_filled_order_ids: set[str] = set()  # 最近已处理的成交订单ID
+
         self.placing_pause_order: bool = False  # 是否正在进行熔断占位下单 (防止重入)
 
     @property

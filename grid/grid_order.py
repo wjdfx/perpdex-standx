@@ -6,12 +6,123 @@
 
 import logging
 import time
+from datetime import datetime
 from typing import List
 
 from . import grid_state
 from exchanges.order_converter import normalize_order_to_ccxt
 
 logger = logging.getLogger(__name__)
+
+
+def _trim_id_cache(cache: set[str], max_size: int = 5000) -> None:
+    if len(cache) <= max_size:
+        return
+    for key in list(cache)[: len(cache) - max_size]:
+        cache.discard(key)
+
+
+def _extract_order_id_candidates(order: dict) -> List[str]:
+    ids = [
+        str(order.get("clientOrderId", "")).strip(),
+        str(order.get("id", "")).strip(),
+        str(order.get("order_id", "")).strip(),
+        str(order.get("cl_ord_id", "")).strip(),
+    ]
+    out = []
+    for oid in ids:
+        if oid and oid not in out:
+            out.append(oid)
+    return out
+
+
+def _pop_order_from_books(is_ask: bool, order_ids: List[str], price: float) -> bool:
+    trading_state = grid_state.trading_state
+    book = trading_state.sell_orders if is_ask else trading_state.buy_orders
+
+    for oid in order_ids:
+        if oid in book:
+            del book[oid]
+            logger.info("从活跃%s单列表删除订单ID=%s, 价格=%s", "卖" if is_ask else "买", oid, price)
+            return True
+
+    # Fallback by nearest price for mismatched WS identifiers.
+    if not book:
+        return False
+    nearest_id = None
+    nearest_diff = float("inf")
+    for oid, p in book.items():
+        diff = abs(float(p) - float(price))
+        if diff < nearest_diff:
+            nearest_id = oid
+            nearest_diff = diff
+    # Tolerance uses min grid step with a little slack.
+    tolerance = max(trading_state.base_grid_single_price * 0.6, 0.6)
+    if nearest_id is not None and nearest_diff <= tolerance:
+        del book[nearest_id]
+        logger.info(
+            "通过价格匹配删除%s单: 订单ID=%s, 成交价=%s, 挂单价差=%s",
+            "卖" if is_ask else "买",
+            nearest_id,
+            price,
+            round(nearest_diff, 6),
+        )
+        return True
+    return False
+
+
+def _to_float(v, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _to_timestamp_ms(v) -> int:
+    if v is None:
+        return 0
+    if isinstance(v, (int, float)):
+        val = int(v)
+        return val if val > 10_000_000_000 else val * 1000
+    s = str(v).strip()
+    if not s:
+        return 0
+    if s.isdigit():
+        val = int(s)
+        return val if val > 10_000_000_000 else val * 1000
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _normalize_trade_event(trade: dict) -> dict:
+    side = str(trade.get("side", "")).lower()
+    price = _to_float(
+        trade.get("price", trade.get("fill_price", trade.get("avg_price")))
+    )
+    qty = _to_float(
+        trade.get("qty", trade.get("size", trade.get("amount", trade.get("fill_qty"))))
+    )
+    ts = _to_timestamp_ms(
+        trade.get("timestamp", trade.get("time", trade.get("created_at")))
+    )
+    order_ref = str(
+        trade.get("cl_ord_id", trade.get("client_order_id", trade.get("order_id", trade.get("ord_id", ""))))
+    ).strip()
+    trade_id = str(
+        trade.get("trade_id", trade.get("id", trade.get("execution_id", trade.get("fill_id", ""))))
+    ).strip()
+    trade_key = trade_id or f"{order_ref}:{side}:{round(price, 8)}:{round(qty, 8)}:{ts}"
+    return {
+        "side": side,
+        "price": price,
+        "qty": qty,
+        "ts": ts,
+        "order_ref": order_ref,
+        "trade_key": trade_key,
+    }
 
 
 async def check_order_fills(orders: dict):
@@ -28,7 +139,8 @@ async def check_order_fills(orders: dict):
     
     for order in orders:
         # 从 CCXT 格式提取字段
-        client_order_index = str(order.get("clientOrderId") or order.get("id", ""))
+        order_id_candidates = _extract_order_id_candidates(order)
+        client_order_index = order_id_candidates[0] if order_id_candidates else ""
         status = order.get("status")
         side = order.get("side", "buy")  # 'buy' or 'sell'
         price = order.get("price", 0)
@@ -50,7 +162,7 @@ async def check_order_fills(orders: dict):
             continue
         
         # 如果是已知的占位订单，也忽略 (防止update消息中amount为0导致的误判)
-        if client_order_index in trading_state.pause_orders:
+        if any(oid in trading_state.pause_orders for oid in order_id_candidates):
             continue
 
         # 记录是否需要补单，如果不在列表中，有可能是直接成交，则不补单
@@ -72,23 +184,16 @@ async def check_order_fills(orders: dict):
             if status in ["closed", "filled"] and filled_amount > 0:
                 trading_state.filled_count += 1
                 trading_state.last_trade_price = float(price)
+                for oid in order_id_candidates:
+                    trading_state.recent_filled_order_ids.add(oid)
+                _trim_id_cache(trading_state.recent_filled_order_ids)
                 
                 trading_state.last_filled_order_is_close_side = is_close_side_order
-                
-                if is_ask:
-                    if client_order_index in trading_state.sell_orders:
-                        del trading_state.sell_orders[client_order_index]
-                        logger.info(
-                            f"从活跃卖单订单列表删除订单ID={client_order_index}, 价格={price}"
-                        )
-                        replenish = True
-                else:
-                    if client_order_index in trading_state.buy_orders:
-                        del trading_state.buy_orders[client_order_index]
-                        logger.info(
-                            f"从活跃买单订单列表删除订单ID={client_order_index}, 价格={price}"
-                        )
-                        replenish = True
+                replenish = _pop_order_from_books(
+                    is_ask=is_ask,
+                    order_ids=order_id_candidates,
+                    price=float(price),
+                )
 
                 # 如果是平仓单（Close Side）成交
                 if is_close_side_order and replenish:
@@ -114,6 +219,89 @@ async def check_order_fills(orders: dict):
             async with replenish_grid_lock:
                 await replenish_grid(True, float(price))
                 trading_state.last_replenish_time = time.time()
+
+
+async def reconcile_fills_from_recent_trades(limit: int = 50):
+    """
+    REST 成交兜底：
+    当 WS 漏推成交或订单ID格式不一致时，从 recent trades 识别新成交并触发补单。
+    """
+    trading_state = grid_state.trading_state
+    GRID_CONFIG = grid_state.GRID_CONFIG
+    OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
+    replenish_grid_lock = grid_state.replenish_grid_lock
+
+    if trading_state.grid_trading is None:
+        return
+
+    trades = await trading_state.grid_trading.get_trades_by_rest(0, limit)
+    if not isinstance(trades, list) or not trades:
+        return
+
+    events = [_normalize_trade_event(t) for t in trades if isinstance(t, dict)]
+    events.sort(key=lambda e: e.get("ts", 0))
+
+    for event in events:
+        trade_key = event["trade_key"]
+        if trade_key in trading_state.processed_trade_keys:
+            continue
+
+        trading_state.processed_trade_keys.add(trade_key)
+        _trim_id_cache(trading_state.processed_trade_keys)
+
+        side = event["side"]
+        price = event["price"]
+        qty = event["qty"]
+        order_ref = event["order_ref"]
+
+        if qty <= 0 or price <= 0 or side not in ("buy", "sell"):
+            continue
+
+        if qty > GRID_CONFIG["GRID_AMOUNT"] * 1.5:
+            # 过滤明显非网格成交
+            continue
+
+        if order_ref and order_ref in trading_state.recent_filled_order_ids:
+            continue
+
+        is_ask = side == "sell"
+        if OPEN_SIDE_IS_ASK:
+            is_close_side_order = not is_ask
+        else:
+            is_close_side_order = is_ask
+
+        async with replenish_grid_lock:
+            matched = _pop_order_from_books(
+                is_ask=is_ask,
+                order_ids=[order_ref] if order_ref else [],
+                price=price,
+            )
+            if not matched:
+                continue
+
+            trading_state.filled_count += 1
+            trading_state.last_trade_price = float(price)
+            trading_state.last_filled_order_is_close_side = is_close_side_order
+            if order_ref:
+                trading_state.recent_filled_order_ids.add(order_ref)
+                _trim_id_cache(trading_state.recent_filled_order_ids)
+
+            if is_close_side_order:
+                trading_state.available_position_size = round(
+                    trading_state.available_position_size - GRID_CONFIG["GRID_AMOUNT"],
+                    2,
+                )
+                once_profit = (
+                    trading_state.base_grid_single_price * GRID_CONFIG["GRID_AMOUNT"]
+                )
+                trading_state.active_profit += once_profit
+                trading_state.total_profit += once_profit
+                trading_state.available_reduce_profit += once_profit
+
+        from .grid_replenish import replenish_grid
+        async with replenish_grid_lock:
+            await replenish_grid(True, float(price))
+            trading_state.last_replenish_time = time.time()
 
 
 async def check_current_orders():

@@ -38,6 +38,7 @@ from .grid_position import check_position_limits
 from .grid_order import (
     check_order_fills,
     check_current_orders,
+    reconcile_fills_from_recent_trades,
 )
 
 # 导入风控管理模块
@@ -445,6 +446,7 @@ async def run_grid_trading(_exchange_type: str = "standx", grid_config: dict = N
                 async with replenish_grid_lock:
                     if time.time() - trading_state.last_replenish_time > 5:
                         await check_current_orders()
+                        await reconcile_fills_from_recent_trades(limit=50)
                         await replenish_grid(False)
 
                 counter += 1
