@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
@@ -38,6 +39,8 @@ class StandXAdapter(ExchangeInterface):
 
         self.auth_token = os.getenv("STANDX_API_TOKEN", "").strip()
         self.request_sign_version = os.getenv("STANDX_REQUEST_SIGN_VERSION", "v1").strip() or "v1"
+        self.price_tick = self._safe_float_env("STANDX_PRICE_TICK", 0.1)
+        self.qty_step = self._safe_float_env("STANDX_QTY_STEP", 0.001)
         self._ed25519_private_key = self._load_request_sign_private_key(
             os.getenv("STANDX_REQUEST_SIGN_PRIVATE_KEY", "").strip()
         )
@@ -50,6 +53,56 @@ class StandXAdapter(ExchangeInterface):
         self.ws_task: Optional[asyncio.Task] = None
         self.ws_ready = asyncio.Event()
         self.ws_authed = False
+
+    @staticmethod
+    def _safe_float_env(name: str, default: float) -> float:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            value = float(raw)
+            return value if value > 0 else default
+        except Exception:
+            return default
+
+    @staticmethod
+    def _quantize_to_step(value: float, step: float) -> float:
+        if step <= 0:
+            return float(value)
+        try:
+            d_value = Decimal(str(value))
+            d_step = Decimal(str(step))
+            steps = (d_value / d_step).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            quantized = steps * d_step
+            return float(quantized)
+        except (InvalidOperation, ValueError):
+            return float(value)
+
+    def _format_price(self, price: float, override_tick: Optional[float] = None) -> str:
+        tick = override_tick if override_tick and override_tick > 0 else self.price_tick
+        value = self._quantize_to_step(price, tick)
+        return format(value, "f")
+
+    def _format_qty(self, qty: float) -> str:
+        value = self._quantize_to_step(qty, self.qty_step)
+        return format(value, "f")
+
+    @staticmethod
+    def _is_tick_error(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return False
+        msg = str(response.get("message", "")).lower()
+        return "price tick" in msg or "not follow price tick" in msg
+
+    @staticmethod
+    def _dedupe_ticks(candidates: List[float]) -> List[float]:
+        out: List[float] = []
+        for tick in candidates:
+            if tick <= 0:
+                continue
+            if all(abs(tick - x) > 1e-12 for x in out):
+                out.append(tick)
+        return out
 
     @staticmethod
     def _b58decode(value: str) -> bytes:
@@ -286,30 +339,53 @@ class StandXAdapter(ExchangeInterface):
         return True, placed_ids
 
     async def place_single_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
-        cl_ord_id = f"grid_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+        base_order_id = f"grid_{int(time.time() * 1000)}"
         session_id = str(uuid.uuid4())
-        payload = {
-            "symbol": self.symbol,
-            "side": "sell" if is_ask else "buy",
-            "order_type": "limit",
-            "qty": str(amount),
-            "price": str(price),
-            "time_in_force": "alo",
-            "reduce_only": False,
-            "cl_ord_id": cl_ord_id,
-        }
-        response = await self._request(
-            "POST",
-            "/new_order",
-            payload=payload,
-            signed=True,
-            extra_headers={"x-session-id": session_id},
+        tick_candidates = self._dedupe_ticks(
+            [
+                self.price_tick,
+                0.5,
+                0.1,
+                1.0,
+                0.05,
+                0.01,
+            ]
         )
-        code = response.get("code", 0) if isinstance(response, dict) else 0
-        if code not in (0, 200, None):
-            logger.error("Failed to place limit order: %s", response)
-            return False, ""
-        return True, cl_ord_id
+
+        for i, tick in enumerate(tick_candidates):
+            cl_ord_id = f"{base_order_id}_{i}_{uuid.uuid4().hex[:4]}"
+            payload = {
+                "symbol": self.symbol,
+                "side": "sell" if is_ask else "buy",
+                "order_type": "limit",
+                "qty": self._format_qty(amount),
+                "price": self._format_price(price, override_tick=tick),
+                "time_in_force": "alo",
+                "reduce_only": False,
+                "cl_ord_id": cl_ord_id,
+            }
+            response = await self._request(
+                "POST",
+                "/new_order",
+                payload=payload,
+                signed=True,
+                extra_headers={"x-session-id": session_id},
+            )
+            code = response.get("code", 0) if isinstance(response, dict) else 0
+            if code in (0, 200, None):
+                if abs(tick - self.price_tick) > 1e-12:
+                    logger.warning("Auto-adjusted price tick from %s to %s", self.price_tick, tick)
+                    self.price_tick = tick
+                return True, cl_ord_id
+
+            if not self._is_tick_error(response):
+                logger.error("Failed to place limit order: %s", response)
+                return False, ""
+
+            logger.warning("Price tick mismatch (tick=%s), retrying with another tick", tick)
+
+        logger.error("Failed to place limit order after tick retries")
+        return False, ""
 
     async def place_single_market_order(self, is_ask: bool, price: float, amount: float) -> Tuple[bool, str]:
         cl_ord_id = f"grid_mkt_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -318,7 +394,7 @@ class StandXAdapter(ExchangeInterface):
             "symbol": self.symbol,
             "side": "sell" if is_ask else "buy",
             "order_type": "market",
-            "qty": str(amount),
+            "qty": self._format_qty(amount),
             "time_in_force": "ioc",
             "reduce_only": False,
             "cl_ord_id": cl_ord_id,

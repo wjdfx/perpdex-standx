@@ -1,6 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Dict, Callable, Any
-import pandas as pd
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
+else:
+    class _PD:
+        DataFrame = Any
+    pd = _PD()
 
 class ExchangeInterface(ABC):
     """
