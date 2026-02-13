@@ -36,7 +36,12 @@ def _extract_order_id_candidates(order: dict) -> List[str]:
     return out
 
 
-def _pop_order_from_books(is_ask: bool, order_ids: List[str], price: float) -> bool:
+def _pop_order_from_books(
+    is_ask: bool,
+    order_ids: List[str],
+    price: float,
+    allow_price_fallback: bool = True,
+) -> bool:
     trading_state = grid_state.trading_state
     book = trading_state.sell_orders if is_ask else trading_state.buy_orders
 
@@ -45,6 +50,9 @@ def _pop_order_from_books(is_ask: bool, order_ids: List[str], price: float) -> b
             del book[oid]
             logger.info("从活跃%s单列表删除订单ID=%s, 价格=%s", "卖" if is_ask else "买", oid, price)
             return True
+
+    if not allow_price_fallback:
+        return False
 
     # Fallback by nearest price for mismatched WS identifiers.
     if not book:
@@ -241,6 +249,17 @@ async def reconcile_fills_from_recent_trades(limit: int = 50):
     events = [_normalize_trade_event(t) for t in trades if isinstance(t, dict)]
     events.sort(key=lambda e: e.get("ts", 0))
 
+    # 首次对账只建立基线，避免把历史成交当作“新成交”触发补单风暴。
+    if not trading_state.trade_reconcile_seeded:
+        for event in events:
+            trading_state.processed_trade_keys.add(event["trade_key"])
+        _trim_id_cache(trading_state.processed_trade_keys)
+        trading_state.trade_reconcile_seeded = True
+        logger.info("成交对账基线已建立: %s 条历史成交已标记", len(events))
+        return
+
+    strategy_start_ms = int(trading_state.start_time * 1000)
+
     for event in events:
         trade_key = event["trade_key"]
         if trade_key in trading_state.processed_trade_keys:
@@ -253,8 +272,13 @@ async def reconcile_fills_from_recent_trades(limit: int = 50):
         price = event["price"]
         qty = event["qty"]
         order_ref = event["order_ref"]
+        event_ts = int(event.get("ts", 0))
 
         if qty <= 0 or price <= 0 or side not in ("buy", "sell"):
+            continue
+
+        # 忽略策略启动前的历史成交，防止重启时误触发补单。
+        if event_ts and event_ts < strategy_start_ms - 3000:
             continue
 
         if qty > GRID_CONFIG["GRID_AMOUNT"] * 1.5:
@@ -275,6 +299,7 @@ async def reconcile_fills_from_recent_trades(limit: int = 50):
                 is_ask=is_ask,
                 order_ids=[order_ref] if order_ref else [],
                 price=price,
+                allow_price_fallback=False,
             )
             if not matched:
                 continue

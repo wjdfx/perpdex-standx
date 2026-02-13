@@ -73,6 +73,7 @@ class GridTradingState:
         self.available_reduce_profit: float = 0.0  # 可用来减仓的收益
         self.processed_trade_keys: set[str] = set()  # REST成交去重键
         self.recent_filled_order_ids: set[str] = set()  # 最近已处理的成交订单ID
+        self.trade_reconcile_seeded: bool = False  # 首次对账仅建立基线，不触发补单
 
         self.placing_pause_order: bool = False  # 是否正在进行熔断占位下单 (防止重入)
 
