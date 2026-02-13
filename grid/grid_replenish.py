@@ -10,6 +10,13 @@ from typing import List, Optional, Tuple
 from . import grid_state
 
 logger = logging.getLogger(__name__)
+_POSITION_EPS = 1e-9
+
+
+def _max_close_orders_by_position(available_position_size: float, grid_amount: float) -> int:
+    if grid_amount <= 0:
+        return 0
+    return max(0, int((available_position_size + _POSITION_EPS) / grid_amount))
 
 
 def calculate_grid_prices(
@@ -582,15 +589,16 @@ async def _replenish_config_close_orders():
     OPEN_SIDE_IS_ASK = grid_state.OPEN_SIDE_IS_ASK
     CLOSE_SIDE_IS_ASK = grid_state.CLOSE_SIDE_IS_ASK
     
-    available_close_orders_count = (
-        trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
+    max_close_orders = _max_close_orders_by_position(
+        trading_state.available_position_size,
+        GRID_CONFIG["GRID_AMOUNT"],
     )
 
     while (
         trading_state.close_orders_count < GRID_CONFIG["GRID_COUNT"]
         and trading_state.available_position_size
         > trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
-        and trading_state.close_orders_count < available_close_orders_count
+        and trading_state.close_orders_count < max_close_orders
     ):
         # 计算最远的平仓价格
         furthest_close_price = None

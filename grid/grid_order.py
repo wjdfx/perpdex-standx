@@ -13,6 +13,7 @@ from . import grid_state
 from exchanges.order_converter import normalize_order_to_ccxt
 
 logger = logging.getLogger(__name__)
+_POSITION_EPS = 1e-9
 
 
 def _trim_id_cache(cache: set[str], max_size: int = 5000) -> None:
@@ -131,6 +132,12 @@ def _normalize_trade_event(trade: dict) -> dict:
         "order_ref": order_ref,
         "trade_key": trade_key,
     }
+
+
+def _max_close_orders_by_position(available_position_size: float, grid_amount: float) -> int:
+    if grid_amount <= 0:
+        return 0
+    return max(0, int((available_position_size + _POSITION_EPS) / grid_amount))
 
 
 async def check_order_fills(orders: dict):
@@ -397,12 +404,21 @@ async def check_current_orders():
         await _cancel_orders(cancel_orders)
 
     # 平仓侧订单不能超过持仓量 (Position Sizing check)
+    max_close_orders = _max_close_orders_by_position(
+        trading_state.available_position_size,
+        GRID_CONFIG["GRID_AMOUNT"],
+    )
     if (
-        trading_state.close_orders_count * GRID_CONFIG["GRID_AMOUNT"]
-        > trading_state.available_position_size
+        trading_state.close_orders_count > max_close_orders
         and (time.time() - trading_state.start_time) > 60
     ):
-        logger.info("平仓单总量超过持仓，进行修剪")
+        logger.info(
+            "平仓单总量超过持仓，进行修剪: close_orders=%s, max_allowed=%s, available_position=%.6f, grid_amount=%.6f",
+            trading_state.close_orders_count,
+            max_close_orders,
+            trading_state.available_position_size,
+            GRID_CONFIG["GRID_AMOUNT"],
+        )
         cancel_orders = []
         
         # 取消最远的订单
@@ -413,9 +429,7 @@ async def check_current_orders():
             reverse=reverse_sort
         )
 
-        cancel_count = trading_state.close_orders_count - int(
-            trading_state.available_position_size / GRID_CONFIG["GRID_AMOUNT"]
-        )
+        cancel_count = trading_state.close_orders_count - max_close_orders
 
         if cancel_count > 0:
             for order_id, price in dict(sorted_orders).items():
