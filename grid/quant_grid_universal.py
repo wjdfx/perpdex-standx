@@ -425,6 +425,15 @@ async def run_grid_trading(_exchange_type: str = "standx", grid_config: dict = N
                         trading_state.active_grid_signle_price = max(
                             min_step, min(raw_step, max_step)
                         )
+                        logger.info(
+                            "触发ATR动态放大: atr=%.4f > threshold=%.4f, "
+                            "base_step=%.4f -> active_step=%.4f (raw_step=%.4f)",
+                            atr_value,
+                            float(CONFIG["ATR_THRESHOLD"]),
+                            trading_state.base_grid_single_price,
+                            trading_state.active_grid_signle_price,
+                            raw_step,
+                        )
                     else:
                         trading_state.active_grid_signle_price = (
                             trading_state.base_grid_single_price
