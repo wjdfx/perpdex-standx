@@ -215,10 +215,10 @@ async def _save_pause_position():
     """
     熔断时创建占位仓位订单
     
-    拆分规则：
+    拆分规则（占位单间距固定使用基础网格间距）：
     - 如果仓位 > 4倍 GRID_AMOUNT，拆分为多个订单
     - 每个订单数量在 2-3 倍 GRID_AMOUNT 之间
-    - 围绕回本价格均匀定价，间距为 active_grid_signle_price * 订单数量
+    - 围绕回本价格均匀定价，间距为 base_grid_single_price * 订单数量
     - 回本价格上方的挂单量不少于下方，确保全部卖出后能回本
     """
     trading_state = grid_state.trading_state
@@ -245,9 +245,16 @@ async def _save_pause_position():
         total_position = trading_state.available_position_size
         grid_amount = GRID_CONFIG["GRID_AMOUNT"]
         
+        # 熔断占位单只使用基础间距，不使用放大后的 active 间距。
+        pause_grid_step = (
+            trading_state.base_grid_single_price
+            if trading_state.base_grid_single_price > 0
+            else trading_state.active_grid_signle_price
+        )
+
         # 仓位形成距离（回本价格与最后交易价格的差距）
         position_price_range = (
-            total_position / grid_amount * trading_state.active_grid_signle_price
+            total_position / grid_amount * pause_grid_step
         )
 
         # 成本价（回本价格）：最后交易价格 +/- 距离差价/2
@@ -276,15 +283,15 @@ async def _save_pause_position():
                 
             order_count = len(order_amounts)
             
-            # 计算价格间距：active_grid_signle_price * 平均订单大小(倍数)
-            # 例如：如果订单主要是2倍 GRID_AMOUNT，间距就应该是 2 * active_grid_signle_price
+            # 计算价格间距：base_grid_single_price * 平均订单大小(倍数)
+            # 例如：如果订单主要是2倍 GRID_AMOUNT，间距就应该是 2 * base_grid_single_price
             avg_multiple = (total_position / grid_amount) / order_count
-            price_step = trading_state.active_grid_signle_price * avg_multiple
+            price_step = pause_grid_step * avg_multiple
             
             logger.info(
                 f"占位订单拆分计算: 总仓位={total_position}, 基础量={grid_amount}, "
                 f"订单数={order_count}, 平均倍数={avg_multiple:.2f}, "
-                f"单网格价差={trading_state.active_grid_signle_price}, "
+                f"单网格价差={pause_grid_step}, "
                 f"订单间距={price_step:.4f}"
             )
             
@@ -301,7 +308,7 @@ async def _save_pause_position():
             # 做空(买单): 最高价必须 < 当前价
             # -----------------------------------------------------------
             current_price = trading_state.last_trade_price
-            safe_buffer = trading_state.active_grid_signle_price * 0.5 # 安全缓冲距离
+            safe_buffer = pause_grid_step * 0.5 # 安全缓冲距离
             
             if not OPEN_SIDE_IS_ASK: # 做多
                 min_price = min(order_prices)
@@ -324,7 +331,7 @@ async def _save_pause_position():
             # 同样应用价格检查
             final_price = breakeven_price
             current_price = trading_state.last_trade_price
-            safe_buffer = trading_state.active_grid_signle_price * 0.5
+            safe_buffer = pause_grid_step * 0.5
 
             if not OPEN_SIDE_IS_ASK: # 做多
                 if final_price <= current_price:
